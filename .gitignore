@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.log
+
+# local runtime state (never commit: contains session ids and account info)
+.tide/
