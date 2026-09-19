@@ -17,6 +17,8 @@ Options:
   --config <path>   Use a specific config file
   --debug           Verbose logging
   --skip-quota-check  Skip the quota probe and resume any waiting session. Test/debug only.
+  --session <id>    For watch: a session id the watcher may resume. Repeatable.
+  --session-all     For watch: resume every waiting session regardless of --session list.
   --json            Machine-readable output (status, resume)
   -h, --help        Show this help
 `;
@@ -32,6 +34,8 @@ interface Flags {
   once: boolean;
   json: boolean;
   skipQuotaCheck: boolean;
+  sessionAll: boolean;
+  session: string[];
   bad: string[];
 }
 
@@ -46,8 +50,10 @@ function parseArgs(argv: string[]): Flags {
     once: false,
     json: false,
     skipQuotaCheck: false,
+    sessionAll: false,
+    session: [],
   };
-  const takesValue = ["--config", "--cli", "--prompt"];
+  const takesValue = ["--config", "--cli", "--prompt", "--session"];
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "-h" || arg === "--help") {
@@ -62,12 +68,14 @@ function parseArgs(argv: string[]): Flags {
       }
       if (arg === "--config") flags.configPath = value;
       else if (arg === "--cli") flags.cli = value;
+      else if (arg === "--session") flags.session.push(value);
       else flags.prompt = value;
     } else if (arg === "--dry-run") flags.dryRun = true;
     else if (arg === "--debug") flags.debug = true;
     else if (arg === "--once") flags.once = true;
     else if (arg === "--json") flags.json = true;
     else if (arg === "--skip-quota-check") flags.skipQuotaCheck = true;
+    else if (arg === "--session-all") flags.sessionAll = true;
     else if (arg.startsWith("-")) flags.bad.push(`unknown option: ${arg}`);
     else flags.positional.push(arg);
   }
@@ -80,6 +88,9 @@ function applyFlags(config: Config, flags: Flags): Config {
     dryRun: flags.dryRun || config.dryRun,
     debug: flags.debug || config.debug,
     skipQuotaCheck: flags.skipQuotaCheck || config.skipQuotaCheck,
+    sessionAll: flags.sessionAll || config.sessionAll,
+    // When --session is given, it overrides any list from the config file (the operator typed it now).
+    sessionAllowList: flags.session.length > 0 ? flags.session : config.sessionAllowList,
     resume: { ...config.resume, prompt: flags.prompt ?? config.resume.prompt },
   };
 }
@@ -115,6 +126,13 @@ async function main(): Promise<number> {
     case "resume":
       return await commandResume(config, flags.cli, flags.positional[0], flags.json);
     case "watch":
+      // Fail-safe: without an allow list or the all-switch, the watcher would resume every
+      // interrupted session on this machine. That is almost never what the operator wants.
+      if (!config.sessionAll && config.sessionAllowList.length === 0) {
+        console.error("watch requires --session <id> (repeatable) or --session-all");
+        console.error(USAGE);
+        return 2;
+      }
       return await startWatch(config, flags.cli, flags.once);
     default:
       console.error(`unknown command: ${flags.command}`);

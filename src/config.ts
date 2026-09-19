@@ -26,6 +26,10 @@ export interface Config {
   dryRun: boolean;
   /** When true, the watcher skips the quota probe and resumes any waiting session. Test/debug only. */
   skipQuotaCheck: boolean;
+  /** Session ids the watcher may resume. Empty means none. Ignored when sessionAll is true. */
+  sessionAllowList: string[];
+  /** When true, the watcher resumes every waiting session regardless of sessionAllowList. */
+  sessionAll: boolean;
   filter: FilterPolicy;
   resume: ResumePolicy;
   codex: CodexConfig;
@@ -54,6 +58,8 @@ export function defaultConfig(): Config {
     debug: false,
     dryRun: false,
     skipQuotaCheck: false,
+    sessionAllowList: [],
+    sessionAll: false,
     filter: {
       minIdleMinutes: 5,
       maxAgeMinutes: 24 * 60,

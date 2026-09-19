@@ -90,6 +90,83 @@ export function lastUserUtterance(
   return null;
 }
 
+/** Apply the operator's allow list to the detected sessions. When sessionAll is set, returns them
+ * all; otherwise each prefix narrows the list by `startsWith` (full ids always match themselves).
+ * An ambiguous prefix is skipped with a warning rather than picking one — resuming the wrong
+ * session is the worse error. */
+function applyAllowList(
+  adapter: Adapter,
+  detected: InterruptedSession[],
+  config: Config,
+): { sessions: InterruptedSession[]; filteredNote: string } {
+  if (config.sessionAll) {
+    return { sessions: [...detected], filteredNote: "" };
+  }
+  const sessions: InterruptedSession[] = [];
+  const seen = new Set<string>();
+  for (const prefix of config.sessionAllowList) {
+    const matches = detected.filter((s) => s.sessionId.startsWith(prefix));
+    if (matches.length === 1) {
+      const only = matches[0]!;
+      if (!seen.has(only.sessionId)) {
+        sessions.push(only);
+        seen.add(only.sessionId);
+      }
+    } else if (matches.length > 1) {
+      console.info(`  ${adapter.kind}: --session ${prefix} is ambiguous (${matches.length} matches), skipped — be more specific`);
+      for (const m of matches) {
+        console.info(`    candidate: ${m.sessionId}`);
+      }
+    }
+  }
+  const filteredCount = detected.length - sessions.length;
+  const note = filteredCount > 0 ? ` (${filteredCount} not in --session allow list)` : "";
+  return { sessions, filteredNote: note };
+}
+
+/** Render one waiting session as a single line: id, optional [source], cwd, detail, last user utterance. */
+function summarizeSession(
+  adapter: Adapter,
+  session: InterruptedSession,
+  config: Config,
+): string {
+  const parts = [`${adapter.kind}/${short(session.sessionId)}`];
+  if (session.source) parts.push(`[${session.source}]`);
+  parts.push(session.cwd, oneLine(session.detail));
+  const last = lastUserUtterance(session.spoken, config.resume.prompt);
+  if (last) parts.push(`you said: ${JSON.stringify(oneLine(last.text, 80))}`);
+  return parts.join("  ");
+}
+
+/** Run the quota probe (unless skipped), report the outcome, and say whether resume should proceed. */
+async function decideQuota(adapter: Adapter, config: Config): Promise<"proceed" | "blocked"> {
+  if (config.skipQuotaCheck) {
+    console.info(`  ${adapter.kind}: quota check skipped (--skip-quota-check)`);
+    return "proceed";
+  }
+  const quota = await adapter.readQuota();
+  if (quota.allowed) return "proceed";
+  const reason = quota.blockedReason ?? "unknown";
+  const when = quota.nextResetAt ? `, next reset ${localTimestamp(new Date(quota.nextResetAt * 1_000))}` : "";
+  console.info(`  ${adapter.kind}: quota blocked (${reason})${when} — skipping resume`);
+  return "blocked";
+}
+
+/** Resume one session and log the outcome. In dry-run mode, just describe what would happen. */
+async function resumeSession(
+  adapter: Adapter,
+  session: InterruptedSession,
+  config: Config,
+): Promise<void> {
+  const id = `${adapter.kind}/${short(session.sessionId)}`;
+  if (config.dryRun) {
+    console.info(`    ${id}: would resume in ${session.cwd}`);
+    return;
+  }
+  const result = await adapter.resume(session, config.resume.prompt);
+  console.info(`    ${id}: ${result.ok ? "ok" : "FAIL"} via ${result.via} — ${oneLine(result.detail)}`);
+}
+
 export interface WatcherDeps {
   config: Config;
   adapters: Adapter[];
@@ -151,41 +228,18 @@ export class Watcher {
 
   private async tryAdapter(adapter: Adapter): Promise<void> {
     const { config } = this.deps;
-    const waiting = await waitingSessions(adapter, config);
-    console.info(`  ${adapter.kind}: ${waiting.length} waiting`);
-    if (waiting.length === 0) return;
-    for (const session of waiting) {
-      const parts = [`${adapter.kind}/${short(session.sessionId)}`];
-      if (session.source) parts.push(`[${session.source}]`);
-      parts.push(session.cwd, oneLine(session.detail));
-      const last = lastUserUtterance(session.spoken, config.resume.prompt);
-      if (last) parts.push(`you said: ${JSON.stringify(oneLine(last.text, 80))}`);
-      console.info(`    ${parts.join("  ")}`);
+    const detected = await waitingSessions(adapter, config);
+    const allowed = applyAllowList(adapter, detected, config);
+    console.info(`  ${adapter.kind}: ${allowed.sessions.length} waiting${allowed.filteredNote}`);
+    if (allowed.sessions.length === 0) return;
+    for (const session of allowed.sessions) {
+      console.info(`    ${summarizeSession(adapter, session, config)}`);
     }
-    if (!config.skipQuotaCheck) {
-      const quota = await adapter.readQuota();
-      if (!quota.allowed) {
-        const reason = quota.blockedReason ?? "unknown";
-        const when = quota.nextResetAt ? `, next reset ${localTimestamp(new Date(quota.nextResetAt * 1_000))}` : "";
-        console.info(`  ${adapter.kind}: quota blocked (${reason})${when} — skipping resume`);
-        return;
-      }
-    } else {
-      console.info(`  ${adapter.kind}: quota check skipped (--skip-quota-check)`);
-    }
-    console.info(`  ${adapter.kind}: quota ok — resuming ${waiting.length}${config.dryRun ? " (--dry-run)" : ""}`);
-    for (const session of waiting) {
-      if (this.stopping) {
-        break;
-      }
-      if (config.dryRun) {
-        console.info(`    ${adapter.kind}/${short(session.sessionId)}: would resume in ${session.cwd}`);
-      } else {
-        const result = await adapter.resume(session, config.resume.prompt);
-        console.info(
-          `    ${adapter.kind}/${short(session.sessionId)}: ${result.ok ? "ok" : "FAIL"} via ${result.via} — ${oneLine(result.detail)}`,
-        );
-      }
+    if ((await decideQuota(adapter, config)) === "blocked") return;
+    console.info(`  ${adapter.kind}: quota ok — resuming ${allowed.sessions.length}${config.dryRun ? " (--dry-run)" : ""}`);
+    for (const session of allowed.sessions) {
+      if (this.stopping) break;
+      await resumeSession(adapter, session, config);
     }
   }
 }
