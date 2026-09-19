@@ -51,6 +51,7 @@ export interface Session {
   isSubagent: boolean;
   parentThreadId?: string | null;
   status: SessionStatus;
+  /** Human prompts, newest first. `lastUserUtterance` reads index 0 as the latest. */
   spoken?: Utterance[];
 }
 

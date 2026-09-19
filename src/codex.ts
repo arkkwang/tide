@@ -519,9 +519,9 @@ export function parseRollout(file: string): ThreadState | null {
         latest = { at, status: "running" };
         const said = oneLine(messageText(item.content), SPOKEN_CHARS);
         if (said) {
-          spoken.push({ text: said });
+          spoken.unshift({ text: said });
           if (spoken.length > SPOKEN_COUNT) {
-            spoken.shift();
+            spoken.pop();
           }
         }
       }
