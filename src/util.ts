@@ -50,3 +50,19 @@ export function localTimestamp(d: Date = new Date()): string {
   const s = String(d.getSeconds()).padStart(2, "0");
   return `${h}:${m}:${s}`;
 }
+
+/** Render a duration as "X hour(s) Y minute(s) Z second(s)" — a verbose form for logs that
+ * ask "how long has this been idle". Distinct from `formatDuration`, which is the compact
+ * `Nh Mm / Mm Ss / Ss` form reserved for status timestamps. */
+export function humanizeIdleDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+  if (hours > 0) parts.push(`${hours} hour${hours === 1 ? "" : "s"}`);
+  if (minutes > 0) parts.push(`${minutes} minute${minutes === 1 ? "" : "s"}`);
+  if (seconds > 0) parts.push(`${seconds} second${seconds === 1 ? "" : "s"}`);
+  if (parts.length === 0) parts.push("0 seconds");
+  return parts.join(" ");
+}

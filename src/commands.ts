@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { CodexAdapter, resolveCodexBin } from "./codex.js";
 import {
   Watcher,
+  printWaitingSession,
   type Adapter,
   type InterruptedSession,
   type QuotaInfo,
@@ -149,19 +150,7 @@ export async function commandStatus(
       `  waiting:     ${report.waiting.length} quota-interrupted session(s) (${maxAgeLabel(config.filter)})`,
     );
     for (const session of report.waiting) {
-      const tags = [
-        session.model ? `[${session.model}]` : null,
-        session.source ? `[${session.source}]` : null,
-      ].filter((s): s is string => s !== null);
-      const tagStr = tags.length > 0 ? `  ${tags.join("  ")}` : "";
-      console.log(`      ${short(session.sessionId)}  ${session.cwd}${tagStr}`);
-      console.log(`          ${oneLine(session.detail)}`);
-      for (const said of session.spoken ?? []) {
-        // Distinguish what the user actually said from the resume prompt we sent, so a row of
-        // repeated `continue-from-where-you-left-off` is not mistaken for real conversation.
-        const tag = said.text === config.resume.prompt ? "↑ resume" : "you said";
-        console.log(`          ${tag}: ${JSON.stringify(said.text)}`);
-      }
+      printWaitingSession(session, config);
     }
   }
 

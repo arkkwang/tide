@@ -3,7 +3,7 @@
  * that consumes it; each supported CLI implements it in its own file.
  */
 import { type CliKind, type Config, type FilterPolicy } from "./config.js";
-import { localTimestamp, oneLine, short } from "./util.js";
+import { formatDuration, humanizeIdleDuration, localTimestamp, oneLine, short } from "./util.js";
 
 export interface WindowInfo {
   usedPercent: number;
@@ -25,7 +25,7 @@ export interface Utterance {
   text: string;
 }
 
-export const SPOKEN_COUNT = 3;
+export const SPOKEN_COUNT = 20;
 export const SPOKEN_CHARS = 80;
 
 export interface InterruptedSession {
@@ -67,27 +67,25 @@ export interface Adapter {
 
 export const IDLE_INTERVAL_MS = 30_000;
 
+/** Detect quota-interrupted sessions and apply the idle filter: a session must have been quiet
+ * for at least `config.filter.minIdleMinutes` (default 5) since its last task_complete before the
+ * watcher will resume it. The cutoff protects against resuming a session that just produced the
+ * error — the user might be at the screen about to react, or the CLI might be retrying itself.
+ * Returns the survivors and the count dropped here, so the operator can tell the difference
+ * between "the watcher found nothing" and "the watcher found something but it is too fresh". */
 export async function waitingSessions(
   adapter: Adapter,
   config: Config,
-): Promise<InterruptedSession[]> {
+): Promise<{ sessions: InterruptedSession[]; notIdle: InterruptedSession[] }> {
   const quietCutoff = Date.now() - config.filter.minIdleMinutes * 60_000;
   const interrupted = await adapter.findInterrupted(config.filter);
-  return interrupted.filter((s) => s.interruptedAt <= quietCutoff);
-}
-
-/** The most recent utterance that is not the resume prompt we sent — i.e. the last thing the
- * person actually said. Null when every recorded utterance is one of our own resumes. */
-export function lastUserUtterance(
-  spoken: Utterance[] | undefined,
-  resumePrompt: string,
-): Utterance | null {
-  if (!spoken) return null;
-  for (let i = spoken.length - 1; i >= 0; i--) {
-    const said = spoken[i]!;
-    if (said.text !== resumePrompt) return said;
+  const sessions: InterruptedSession[] = [];
+  const notIdle: InterruptedSession[] = [];
+  for (const s of interrupted) {
+    if (s.interruptedAt <= quietCutoff) sessions.push(s);
+    else notIdle.push(s);
   }
-  return null;
+  return { sessions, notIdle };
 }
 
 /** Apply the operator's allow list to the detected sessions. When sessionAll is set, returns them
@@ -98,9 +96,9 @@ function applyAllowList(
   adapter: Adapter,
   detected: InterruptedSession[],
   config: Config,
-): { sessions: InterruptedSession[]; filteredNote: string } {
+): InterruptedSession[] {
   if (config.sessionAll) {
-    return { sessions: [...detected], filteredNote: "" };
+    return [...detected];
   }
   const sessions: InterruptedSession[] = [];
   const seen = new Set<string>();
@@ -119,23 +117,38 @@ function applyAllowList(
       }
     }
   }
-  const filteredCount = detected.length - sessions.length;
-  const note = filteredCount > 0 ? ` (${filteredCount} not in --session allow list)` : "";
-  return { sessions, filteredNote: note };
+  return sessions;
 }
 
-/** Render one waiting session as a single line: id, optional [source], cwd, detail, last user utterance. */
-function summarizeSession(
-  adapter: Adapter,
-  session: InterruptedSession,
-  config: Config,
-): string {
-  const parts = [`${adapter.kind}/${short(session.sessionId)}`];
-  if (session.source) parts.push(`[${session.source}]`);
-  parts.push(session.cwd, oneLine(session.detail));
+/** The most recent utterance that is not the resume prompt we sent — i.e. the last thing the
+ * person actually said. Null when every recorded utterance is one of our own resumes. */
+export function lastUserUtterance(
+  spoken: Utterance[] | undefined,
+  resumePrompt: string,
+): Utterance | null {
+  if (!spoken) return null;
+  for (let i = spoken.length - 1; i >= 0; i--) {
+    const said = spoken[i]!;
+    if (said.text !== resumePrompt) return said;
+  }
+  return null;
+}
+
+/** Print one waiting session in the multi-line format: an id/cwd header, then the detail line,
+ * then the last thing the user actually said (skipping our own resume prompts), then how long
+ * this session has been idle for. Shared by the watcher and the status command so the two views
+ * never disagree — every line comes from the same helper. */
+export function printWaitingSession(session: InterruptedSession, config: Config): void {
+  const tags = [
+    session.model ? `[${session.model}]` : null,
+    session.source ? `[${session.source}]` : null,
+  ].filter((s): s is string => s !== null);
+  const tagStr = tags.length > 0 ? `  ${tags.join("  ")}` : "";
+  console.info(`      ${short(session.sessionId)}  ${session.cwd}${tagStr}`);
+  console.info(`          ${oneLine(session.detail)}`);
   const last = lastUserUtterance(session.spoken, config.resume.prompt);
-  if (last) parts.push(`you said: ${JSON.stringify(oneLine(last.text, 80))}`);
-  return parts.join("  ");
+  if (last) console.info(`          last you said: ${JSON.stringify(last.text)}`);
+  console.info(`          idle for: ${humanizeIdleDuration(Date.now() - session.interruptedAt)}`);
 }
 
 /** Run the quota probe (unless skipped), report the outcome, and say whether resume should proceed. */
@@ -229,15 +242,27 @@ export class Watcher {
   private async tryAdapter(adapter: Adapter): Promise<void> {
     const { config } = this.deps;
     const detected = await waitingSessions(adapter, config);
-    const allowed = applyAllowList(adapter, detected, config);
-    console.info(`  ${adapter.kind}: ${allowed.sessions.length} waiting${allowed.filteredNote}`);
-    if (allowed.sessions.length === 0) return;
-    for (const session of allowed.sessions) {
-      console.info(`    ${summarizeSession(adapter, session, config)}`);
+    const allowed = applyAllowList(adapter, detected.sessions, config);
+    const totalFound = detected.sessions.length + detected.notIdle.length;
+    const allowFiltered = detected.sessions.length - allowed.length;
+    const notes: string[] = [];
+    if (totalFound > 0) notes.push(`${totalFound} detected`);
+    if (detected.notIdle.length > 0) {
+      const needMin = config.filter.minIdleMinutes;
+      notes.push(`${detected.notIdle.length} not idle for ${needMin} minute${needMin === 1 ? "" : "s"} yet`);
     }
+    if (allowFiltered > 0) notes.push(`${allowFiltered} not in --session allow list`);
+    const note = notes.length > 0 ? ` (${notes.join(", ")})` : "";
+    console.info(`  ${adapter.kind}: ${allowed.length} waiting${note}`);
+    // Print every session through the same helper, so a `idle for:` line follows each block —
+    // including the ones still too fresh to resume.
+    for (const session of [...allowed, ...detected.notIdle]) {
+      printWaitingSession(session, config);
+    }
+    if (allowed.length === 0) return;
     if ((await decideQuota(adapter, config)) === "blocked") return;
-    console.info(`  ${adapter.kind}: quota ok — resuming ${allowed.sessions.length}${config.dryRun ? " (--dry-run)" : ""}`);
-    for (const session of allowed.sessions) {
+    console.info(`  ${adapter.kind}: quota ok — resuming ${allowed.length}${config.dryRun ? " (--dry-run)" : ""}`);
+    for (const session of allowed) {
       if (this.stopping) break;
       await resumeSession(adapter, session, config);
     }
