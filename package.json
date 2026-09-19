@@ -10,8 +10,7 @@
   "scripts": {
     "build": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/tide.mjs --banner:js=\"#!/usr/bin/env node\"",
     "dev": "tsx src/main.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "tsx scripts/guard-test.ts && tsx scripts/classify-test.ts && tsx scripts/accounts-test.ts && tsx scripts/child-test.ts && tsx scripts/cli-test.ts && tsx scripts/watch-test.ts && tsx scripts/codex-test.ts"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

@@ -3,7 +3,7 @@
  * that consumes it; each supported CLI implements it in its own file.
  */
 import { type CliKind, type Config, type FilterPolicy } from "./config.js";
-import { short } from "./util.js";
+import { localTimestamp, oneLine, short } from "./util.js";
 
 export interface WindowInfo {
   usedPercent: number;
@@ -124,6 +124,9 @@ export class Watcher {
   }
 
   private async sweep(): Promise<void> {
+    if (!this.stopping) {
+      console.info(`sweep @${localTimestamp()}`);
+    }
     for (const adapter of this.deps.adapters) {
       if (this.stopping) {
         break;
@@ -135,19 +138,31 @@ export class Watcher {
   private async tryAdapter(adapter: Adapter): Promise<void> {
     const { config } = this.deps;
     const waiting = await waitingSessions(adapter, config);
-    if (waiting.length > 0) {
+    console.info(`  ${adapter.kind}: ${waiting.length} waiting`);
+    if (waiting.length === 0) return;
+    if (!config.skipQuotaCheck) {
       const quota = await adapter.readQuota();
-      if (quota.allowed) {
-        for (const session of waiting) {
-          if (this.stopping) {
-            break;
-          }
-          if (config.dryRun) {
-            console.info(`${adapter.kind}/${short(session.sessionId)}: [dry-run] would resume in ${session.cwd}`);
-          } else {
-            await adapter.resume(session, config.resume.prompt);
-          }
-        }
+      if (!quota.allowed) {
+        const reason = quota.blockedReason ?? "unknown";
+        const when = quota.nextResetAt ? `, next reset ${localTimestamp(new Date(quota.nextResetAt * 1_000))}` : "";
+        console.info(`  ${adapter.kind}: quota blocked (${reason})${when} — skipping resume`);
+        return;
+      }
+    } else {
+      console.info(`  ${adapter.kind}: quota check skipped (--skip-quota-check)`);
+    }
+    console.info(`  ${adapter.kind}: quota ok — resuming ${waiting.length}`);
+    for (const session of waiting) {
+      if (this.stopping) {
+        break;
+      }
+      if (config.dryRun) {
+        console.info(`    ${adapter.kind}/${short(session.sessionId)}: would resume in ${session.cwd}`);
+      } else {
+        const result = await adapter.resume(session, config.resume.prompt);
+        console.info(
+          `    ${adapter.kind}/${short(session.sessionId)}: ${result.ok ? "ok" : "FAIL"} via ${result.via} — ${oneLine(result.detail)}`,
+        );
       }
     }
   }

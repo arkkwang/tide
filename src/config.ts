@@ -24,6 +24,8 @@ export interface Config {
   stateDir: string;
   debug: boolean;
   dryRun: boolean;
+  /** When true, the watcher skips the quota probe and resumes any waiting session. Test/debug only. */
+  skipQuotaCheck: boolean;
   filter: FilterPolicy;
   resume: ResumePolicy;
   codex: CodexConfig;
@@ -51,6 +53,7 @@ export function defaultConfig(): Config {
     stateDir: defaultStateDir(),
     debug: false,
     dryRun: false,
+    skipQuotaCheck: false,
     filter: {
       minIdleMinutes: 5,
       maxAgeMinutes: 24 * 60,

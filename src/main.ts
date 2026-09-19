@@ -16,6 +16,7 @@ Options:
   --dry-run         Say what would happen without resuming anything
   --config <path>   Use a specific config file
   --debug           Verbose logging
+  --skip-quota-check  Skip the quota probe and resume any waiting session. Test/debug only.
   --json            Machine-readable output (status, resume)
   -h, --help        Show this help
 `;
@@ -30,6 +31,7 @@ interface Flags {
   debug: boolean;
   once: boolean;
   json: boolean;
+  skipQuotaCheck: boolean;
   bad: string[];
 }
 
@@ -43,6 +45,7 @@ function parseArgs(argv: string[]): Flags {
     debug: false,
     once: false,
     json: false,
+    skipQuotaCheck: false,
   };
   const takesValue = ["--config", "--cli", "--prompt"];
   for (let i = 1; i < argv.length; i++) {
@@ -64,6 +67,7 @@ function parseArgs(argv: string[]): Flags {
     else if (arg === "--debug") flags.debug = true;
     else if (arg === "--once") flags.once = true;
     else if (arg === "--json") flags.json = true;
+    else if (arg === "--skip-quota-check") flags.skipQuotaCheck = true;
     else if (arg.startsWith("-")) flags.bad.push(`unknown option: ${arg}`);
     else flags.positional.push(arg);
   }
@@ -75,6 +79,7 @@ function applyFlags(config: Config, flags: Flags): Config {
     ...config,
     dryRun: flags.dryRun || config.dryRun,
     debug: flags.debug || config.debug,
+    skipQuotaCheck: flags.skipQuotaCheck || config.skipQuotaCheck,
     resume: { ...config.resume, prompt: flags.prompt ?? config.resume.prompt },
   };
 }

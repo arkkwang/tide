@@ -41,3 +41,12 @@ export function formatDuration(ms: number): string {
 export function short(id: string): string {
   return id.slice(0, 8);
 }
+
+/** Local-time `HH:MM:SS`, for timestamps in operator-facing logs. Avoids the UTC half of the day
+ * that `toISOString()` would otherwise print on machines not in the GMT offset. */
+export function localTimestamp(d: Date = new Date()): string {
+  const h = String(d.getHours()).padStart(2, "0");
+  const m = String(d.getMinutes()).padStart(2, "0");
+  const s = String(d.getSeconds()).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
