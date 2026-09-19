@@ -33,8 +33,6 @@ const RPC_TIMEOUT_MS = 20_000;
 interface RateLimitWindow {
   usedPercent?: number;
   used_percent?: number;
-  windowDurationMins?: number | null;
-  window_minutes?: number | null;
   resetsAt?: number | null;
   resets_at?: number | null;
 }
@@ -42,7 +40,6 @@ interface RateLimitWindow {
 export interface RateLimitsReadResult {
   ordinaryUsageAllowed?: boolean | null;
   rateLimits?: {
-    limitId?: string;
     planType?: string | null;
     primary?: RateLimitWindow | null;
     secondary?: RateLimitWindow | null;
@@ -271,7 +268,6 @@ export class CodexAdapter implements Adapter {
   constructor(
     private readonly bin: string,
     private readonly onDebug: (msg: string) => void,
-    private readonly watch: FilterPolicy,
     private readonly config: CodexConfig,
     private readonly execute: typeof runChildProcess = runChildProcess,
   ) {}
@@ -288,11 +284,6 @@ export class CodexAdapter implements Adapter {
       this.onDebug,
     );
     return quotaFromRateLimits(result);
-  }
-
-  async probe(): Promise<boolean> {
-    const quota = await this.readQuota();
-    return quota.allowed;
   }
 
   async findInterrupted(filter: FilterPolicy): Promise<InterruptedSession[]> {
@@ -323,13 +314,9 @@ export class CodexAdapter implements Adapter {
     return [...byThread.values()]
       .filter((s) => s.quota && s.at >= cutoff)
       .map((s) => ({
-        cli: "codex" as const,
         sessionId: s.sessionId,
-        turnId: s.turnId,
         cwd: s.cwd,
         interruptedAt: s.at,
-        detail: s.detail,
-        resetsAt: null,
         source: s.source,
         spoken: s.spoken,
       }))
@@ -405,8 +392,6 @@ export interface ThreadState {
   source: string | null;
   at: number;
   quota: boolean;
-  turnId: string | null;
-  detail: string;
   spoken: Utterance[];
 }
 /** Reads one rollout file and reports the thread's latest turn outcome (`at` in unix ms); a
@@ -427,7 +412,7 @@ export function parseRollout(file: string): ThreadState | null {
   let cwd = "";
   let source: string | null = null;
   let parentThreadId: string | null = null;
-  let latest: { at: number; quota: boolean; turnId: string | null; detail: string } | null = null;
+  let latest: { at: number; quota: boolean } | null = null;
   const spoken: Utterance[] = [];
 
   for (const line of text.split(/\r?\n/)) {
@@ -452,19 +437,13 @@ export function parseRollout(file: string): ThreadState | null {
     if (record.type !== "event_msg" || !Number.isFinite(at)) continue;
 
     if (payload["type"] === "task_complete") {
-      const error = payload["error"] as { codex_error_info?: string; message?: string } | null;
-      const tag = error?.codex_error_info ?? "";
-      latest = {
-        at,
-        quota: QUOTA_ERROR_TAGS.has(tag),
-        turnId: typeof payload["turn_id"] === "string" ? (payload["turn_id"] as string) : null,
-        detail: tag || (error?.message ? "error" : "completed"),
-      };
+      const error = payload["error"] as { codex_error_info?: string } | null;
+      latest = { at, quota: QUOTA_ERROR_TAGS.has(error?.codex_error_info ?? "") };
     }
 
     // New activity supersedes an old quota interruption, even in a separate rollout.
     if (payload["type"] === "task_started" || payload["type"] === "turn_aborted") {
-      latest = { at, quota: false, turnId: typeof payload["turn_id"] === "string" ? payload["turn_id"] : null, detail: String(payload["type"]) };
+      latest = { at, quota: false };
     }
 
     // Only a submitted message emits this item; the transcript's `user` role is shared with
@@ -472,10 +451,10 @@ export function parseRollout(file: string): ThreadState | null {
     if (payload["type"] === "item_completed") {
       const item = payload["item"] as { type?: string; content?: unknown } | undefined;
       if (item?.type === "UserMessage") {
-        latest = { at, quota: false, turnId: null, detail: "new user input" };
+        latest = { at, quota: false };
         const said = oneLine(messageText(item.content), SPOKEN_CHARS);
         if (said) {
-          spoken.push({ at, text: said });
+          spoken.push({ text: said });
           if (spoken.length > SPOKEN_COUNT) spoken.shift();
         }
       }

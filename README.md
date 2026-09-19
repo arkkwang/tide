@@ -57,7 +57,7 @@ claude --bg --resume <session-id> "<prompt>"
 - **投递成功**：进程退出码 0，且 stdout 包含 `backgrounded`。tide 不接管 TUI、不等模型整轮。
 - **会话被占用时**：原 TUI 仍开着，Claude Code 会分叉一个新会话，stdout 会带一行 `note: started a copy as <id>`。这是 Claude Code 的正常行为；tide 不挑会话 id。
 - **消息落点**：消息在那个后台会话里继续；用户用 `claude attach <id>` 或 `claude logs <id>` 看后续。
-- **每个 session 只投一次**：Claude Code 每次 `--bg --resume` 都可能 fork 新会话。tide 在 `<stateDir>/claude-resumed.json` 里记录已经投过的 session id，下次再看到同一个就跳过（`deferred: true, via: "already-resumed"`），防止一个卡住的 session 在多次 sweep 里堆出 N 个 fork。手动删除该文件可以重新尝试。
+- **每个 session 只投一次**：Claude Code 每次 `--bg --resume` 都可能 fork 新会话。tide 在 `<stateDir>/claude-resumed.json` 里记录已经投过的 session id，之后**不再把该 session 报为中断**——watcher 不会再看它，`tide status` 里也不出现，防止一个卡住的 session 在多次 sweep 里堆出 N 个 fork。要重新尝试，手动把那个 id 从文件里删掉（没有命令行开关）。
 
 `tide resume --cli claude` 的 `ok: true` 是 Claude Code CLI 接受了这则入队，**不是任务做完**。
 

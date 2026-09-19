@@ -8,7 +8,7 @@ import {
   type InterruptedSession,
   type QuotaInfo,
 } from "./watch.js";
-import { formatDuration, oneLine, short } from "./util.js";
+import { formatDuration } from "./util.js";
 import { type Config, type FilterPolicy } from "./config.js";
 
 /** Build the adapters to work with, optionally narrowed to the one `--cli` names. */
@@ -25,13 +25,13 @@ export function buildAdapters(
 
   if ((cli === undefined || cli === "codex") && config.codex.enabled) {
     const bin = resolveCodexBin(config.codex.bin);
-    if (bin) adapters.push(new CodexAdapter(bin, () => {}, config.filter, config.codex));
+    if (bin) adapters.push(new CodexAdapter(bin, () => {}, config.codex));
     else problems.push("codex: could not locate the CLI (set codex.bin or CODEX_BIN)");
   }
 
   if ((cli === undefined || cli === "claude") && config.claude.enabled) {
     const bin = resolveClaudeBin(config.claude.bin);
-    if (bin) adapters.push(new ClaudeAdapter(bin, () => {}, config.filter, config.claude));
+    if (bin) adapters.push(new ClaudeAdapter(bin, config.claude));
     else problems.push("claude: could not locate the CLI (set claude.bin or CLAUDE_BIN)");
   }
   // Never silent: an empty adapter list with no explanation is the one failure a user
@@ -226,8 +226,8 @@ export async function commandResume(
   if (matches.length === 0) {
     for (const adapter of adapters) adapter.close?.();
     return refuse(
-      `no interrupted session matching "${id}" — only sessions stopped by a quota limit can be` +
-        " resumed; tide status lists them.",
+      `no interrupted session matching "${id}" — only quota-stopped sessions tide has not already` +
+        " queued are listed; tide status shows the current list.",
       1,
     );
   }
@@ -244,7 +244,6 @@ export async function commandResume(
     console.log(`=== resume ${adapter.kind} ===`);
     console.log(`  session:  ${session.sessionId}`);
     console.log(`  cwd:      ${session.cwd}`);
-    console.log(`  stopped:  ${session.detail}`);
     for (const said of session.spoken ?? []) {
       console.log(`  said:     ${JSON.stringify(said.text)}`);
     }

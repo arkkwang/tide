@@ -51,13 +51,21 @@ export const QUOTA_ERROR_TAG = "rate_limit";
 interface ClaudeProbeResult {
   is_error?: boolean;
   result?: unknown;
+  /** HTTP status of the upstream failure, when there was one (`api_error_status` in the envelope). */
+  api_error_status?: unknown;
 }
 
-/** Decide whether the probe output tells us the account is currently rate-limited. The CLI
- * surfaces the upstream error as a `result` string under `is_error: true`; we match on the
- * substring rather than parsing the structured API shape, because what the CLI writes back is
- * already its own decision and changes between releases. */
-function probeErrorMentionsRateLimit(probe: ClaudeProbeResult): boolean {
+/**
+ * Decide whether the probe output tells us the account is currently rate-limited. The status code
+ * is the primary signal: it is upstream's own verdict, and it is the only one that survives a
+ * provider whose error prose we cannot read — MiniMax answers a 429 with Chinese text containing
+ * nothing matching `rate limit`, so a text-only test called a definite block "unknown".
+ *
+ * The prose match stays as a fallback for envelopes that carry a rate-limit message but no status.
+ * Anything else still falls through to `unknown`, which is what that value is for.
+ */
+function probeIsRateLimited(probe: ClaudeProbeResult): boolean {
+  if (probe.api_error_status === 429) return true;
   const text = typeof probe.result === "string" ? probe.result : "";
   return /rate[ _-]?limit/i.test(text);
 }
@@ -73,9 +81,9 @@ function probeErrorMentionsRateLimit(probe: ClaudeProbeResult): boolean {
  * on a session whose TUI is still open forks a new session id per call. To keep that from
  * blowing up into one fork per sweep, the adapter remembers every session it has already
  * queued — loaded from `<stateDir>/claude-resumed.json` on construction, flushed after every
- * successful resume, and again on `close()`. A session that has already been queued returns
- * `deferred: true, via: "already-resumed"` and is never touched again until the operator
- * removes it from that file by hand.
+ * successful resume, and again on `close()`. That ledger is what `findInterrupted` filters on,
+ * so a queued session stops being reported as interrupted at all. The operator brings one back
+ * by deleting it from that file by hand; there is no in-band way to re-queue it.
  */
 export class ClaudeAdapter implements Adapter {
   readonly kind = "claude" as const;
@@ -85,8 +93,6 @@ export class ClaudeAdapter implements Adapter {
 
   constructor(
     private readonly bin: string,
-    private readonly onDebug: (msg: string) => void,
-    private readonly watch: FilterPolicy,
     private readonly config: ClaudeConfig,
     private readonly execute: typeof runChildProcess = runChildProcess,
   ) {
@@ -103,10 +109,17 @@ export class ClaudeAdapter implements Adapter {
     }
     // `--bare` skips hooks / CLAUDE.md / plugins so a probe never fires user-defined side
     // effects. `--no-session-persistence` keeps the throwaway probe out of the transcript tree.
+    // `CLAUDE_CODE_MAX_RETRIES=0` is what makes the probe answerable: on a 429 the CLI retries
+    // with backoff for minutes, so a throttled account used to blow through any sane timeout and
+    // report "unknown" instead of "blocked". With retries off it fails in ~2s.
     const result = await this.execute(
       this.bin,
       ["-p", this.config.probePrompt, "--bare", "--no-session-persistence", "--output-format", "json"],
-      { cwd: process.cwd(), timeoutMs: this.config.probeTimeoutSeconds * 1_000 },
+      {
+        cwd: process.cwd(),
+        timeoutMs: this.config.probeTimeoutSeconds * 1_000,
+        env: { ...process.env, CLAUDE_CODE_MAX_RETRIES: "0" },
+      },
     );
     if (result.spawnError) {
       throw new Error(`probe could not be started: ${result.spawnError}`);
@@ -133,7 +146,7 @@ export class ClaudeAdapter implements Adapter {
         notes: [`probe ok via ${this.bin}`],
       };
     }
-    if (probeErrorMentionsRateLimit(parsed)) {
+    if (probeIsRateLimited(parsed)) {
       return {
         allowed: false,
         blockedReason: "rate_limit",
@@ -167,6 +180,11 @@ export class ClaudeAdapter implements Adapter {
       if (!isDir(projectDir)) continue;
       for (const entry of safeReaddir(projectDir)) {
         if (!entry.endsWith(".jsonl")) continue;
+        const sessionId = entry.replace(/\.jsonl$/, "");
+        // Already queued by tide, so nobody is waiting on it: the ledger exists to stop the
+        // watcher forking the session again, and reporting it here would promise an action that
+        // will not happen. `resume` refuses it too, so it is absent from `tide status` as well.
+        if (this.resumedSessions.has(sessionId)) continue;
         const file = join(projectDir, entry);
         let mtimeMs: number;
         try {
@@ -184,13 +202,9 @@ export class ClaudeAdapter implements Adapter {
         if (interruptedAt < cutoff) continue;
 
         found.push({
-          cli: "claude",
-          sessionId: entry.replace(/\.jsonl$/, ""),
-          turnId: state.tailKey,
+          sessionId,
           cwd: state.cwd,
           interruptedAt,
-          detail: state.detail,
-          resetsAt: null,
           model: state.model,
           spoken: state.spoken,
         });
@@ -203,18 +217,6 @@ export class ClaudeAdapter implements Adapter {
   async resume(session: InterruptedSession, prompt: string): Promise<ResumeResult> {
     if (process.platform !== "win32") {
       return { ok: false, delivered: false, deferred: true, via: "none", detail: "This delivery build supports Windows only" };
-    }
-    // De-dup: Claude Code has no real queue, so each `--bg --resume` against a session whose
-    // TUI is still open forks a new background copy. After the first attempt we record the id
-    // and refuse to touch it again — otherwise one stuck session becomes N forks over N sweeps.
-    if (this.resumedSessions.has(session.sessionId)) {
-      return {
-        ok: false,
-        delivered: false,
-        deferred: true,
-        via: "already-resumed",
-        detail: "this session was already queued by tide; not resuming again (delete .tide/claude-resumed.json to retry)",
-      };
     }
     const timeoutMs = this.config.deliveryTimeoutSeconds * 1_000;
     // `claude --bg --resume <id> "<msg>"` queues the message into a background session and
@@ -322,12 +324,7 @@ interface TailState {
   quotaError: boolean;
   cwd: string;
   errorAt: number | null;
-  detail: string;
   model: string | null;
-  /** uuid of the newest record: the cheapest identity for how far the session got, and what tells
-   * one quota interruption from the next — timestamps are too coarse to. */
-  tailKey: string | null;
-  spokenAt: number | null;
   spoken: Utterance[];
 }
 
@@ -340,11 +337,9 @@ export function inspectTranscriptTail(
   const model = newestModel(lines);
   const spoken = recentUtterances(lines);
 
-  let lastError: { at: number; text: string; tag: string | null } | null = null;
+  let lastError: { at: number; tag: string | null } | null = null;
   let lastSuccessAfterError = false;
   let cwd = "";
-  let tailKey: string | null = null;
-  let spokenAt: number | null = null;
 
   for (let i = lines.length - 1; i >= 0; i--) {
     let record: Record<string, unknown>;
@@ -354,22 +349,14 @@ export function inspectTranscriptTail(
       continue;
     }
     const type = record["type"];
-    if (!tailKey && typeof record["uuid"] === "string") tailKey = record["uuid"] as string;
     if (!cwd && typeof record["cwd"] === "string") cwd = record["cwd"] as string;
-    if (spokenAt === null) {
-      const at = Date.parse(String(record["timestamp"] ?? "")) || 0;
-      const said = type === "user" || (type === "assistant" && record["isApiErrorMessage"] !== true);
-      if (said && at > 0) spokenAt = at;
-    }
 
     if (type === "assistant") {
       if (record["isApiErrorMessage"] === true) {
         if (!lastError) {
-          const message = record["message"] as { content?: unknown } | undefined;
           lastError = {
             at: Date.parse(String(record["timestamp"] ?? "")) || 0,
             tag: typeof record["error"] === "string" ? (record["error"] as string) : null,
-            text: messageText(message?.content),
           };
         }
       } else if (!lastError) {
@@ -389,9 +376,6 @@ export function inspectTranscriptTail(
       quotaError: false,
       cwd,
       errorAt: null,
-      detail: "no recent error",
-      tailKey,
-      spokenAt,
       spoken,
       model,
     };
@@ -401,22 +385,15 @@ export function inspectTranscriptTail(
       quotaError: false,
       cwd,
       errorAt: null,
-      detail: "last turn succeeded",
-      tailKey,
-      spokenAt,
       spoken,
       model,
     };
   }
 
-  const { tag, text } = lastError;
   return {
-    quotaError: tag === QUOTA_ERROR_TAG,
+    quotaError: lastError.tag === QUOTA_ERROR_TAG,
     cwd,
     errorAt: lastError.at || null,
-    detail: oneLine(text) || (tag ? `error: ${tag}` : "unrecognized API error"),
-    tailKey,
-    spokenAt,
     spoken,
     model,
   };
@@ -438,7 +415,7 @@ function recentUtterances(lines: string[]): Utterance[] {
       messageText((record["message"] as { content?: unknown } | undefined)?.content),
       SPOKEN_CHARS,
     );
-    if (at > 0 && text) said.push({ at, text });
+    if (at > 0 && text) said.push({ text });
   }
   return said;
 }

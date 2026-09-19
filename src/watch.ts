@@ -3,7 +3,7 @@
  * that consumes it; each supported CLI implements it in its own file.
  */
 import { type CliKind, type Config, type FilterPolicy } from "./config.js";
-import { formatDuration, humanizeIdleDuration, localTimestamp, oneLine, short } from "./util.js";
+import { humanizeIdleDuration, localTimestamp, oneLine, short } from "./util.js";
 
 export interface WindowInfo {
   usedPercent: number;
@@ -21,7 +21,6 @@ export interface QuotaInfo {
 }
 
 export interface Utterance {
-  at: number;
   text: string;
 }
 
@@ -29,13 +28,9 @@ export const SPOKEN_COUNT = 20;
 export const SPOKEN_CHARS = 80;
 
 export interface InterruptedSession {
-  cli: CliKind;
   sessionId: string;
-  turnId: string | null;
   cwd: string;
   interruptedAt: number;
-  detail: string;
-  resetsAt: number | null;
   model?: string | null;
   source?: string | null;
   spoken?: Utterance[];
@@ -134,10 +129,10 @@ export function lastUserUtterance(
   return null;
 }
 
-/** Print one waiting session in the multi-line format: an id/cwd header, then the detail line,
- * then the last thing the user actually said (skipping our own resume prompts), then how long
- * this session has been idle for. Shared by the watcher and the status command so the two views
- * never disagree — every line comes from the same helper. */
+/** Print one waiting session in the multi-line format: an id/cwd header, then the last thing the
+ * user actually said (skipping our own resume prompts), then how long this session has been idle
+ * for. Shared by the watcher and the status command so the two views never disagree — every line
+ * comes from the same helper. */
 export function printWaitingSession(session: InterruptedSession, config: Config): void {
   const tags = [
     session.model ? `[${session.model}]` : null,
@@ -145,7 +140,6 @@ export function printWaitingSession(session: InterruptedSession, config: Config)
   ].filter((s): s is string => s !== null);
   const tagStr = tags.length > 0 ? `  ${tags.join("  ")}` : "";
   console.info(`      ${short(session.sessionId)}  ${session.cwd}${tagStr}`);
-  console.info(`          ${oneLine(session.detail)}`);
   const last = lastUserUtterance(session.spoken, config.resume.prompt);
   if (last) console.info(`          last you said: ${JSON.stringify(last.text)}`);
   console.info(`          idle for: ${humanizeIdleDuration(Date.now() - session.interruptedAt)}`);
@@ -157,7 +151,19 @@ async function decideQuota(adapter: Adapter, config: Config): Promise<"proceed" 
     console.info(`  ${adapter.kind}: quota check skipped (--skip-quota-check)`);
     return "proceed";
   }
-  const quota = await adapter.readQuota();
+  // A probe that fails to answer (provider unreachable, output not JSON, our own timeout) must
+  // not escape: an unhandled throw here unwinds `tryAdapter` → `sweep` → `run` and takes the
+  // whole watcher down, ending every later sweep with it. Treat "could not tell" as blocked —
+  // same fail-closed decision as a definite block, but only for this round.
+  let quota: QuotaInfo;
+  try {
+    quota = await adapter.readQuota();
+  } catch (err) {
+    console.info(
+      `  ${adapter.kind}: quota check failed (${oneLine((err as Error).message)}) — skipping resume`,
+    );
+    return "blocked";
+  }
   if (quota.allowed) return "proceed";
   const reason = quota.blockedReason ?? "unknown";
   const when = quota.nextResetAt ? `, next reset ${localTimestamp(new Date(quota.nextResetAt * 1_000))}` : "";
