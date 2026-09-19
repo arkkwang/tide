@@ -84,11 +84,15 @@ export async function commandStatus(
       quota: null,
       sessions: capWithMainReserve(all, cap, config.watchPolicy.maxMainSessions),
     };
-    try {
-      report.quota = await adapter.readQuota();
-      report.usable = report.quota.allowed;
-    } catch (err) {
-      report.unreadable = (err as Error).message;
+    if (config.skipQuotaCheck) {
+      report.unreadable = "skipped by --skip-quota-check";
+    } else {
+      try {
+        report.quota = await adapter.readQuota();
+        report.usable = report.quota.allowed;
+      } catch (err) {
+        report.unreadable = (err as Error).message;
+      }
     }
     reports.push(report);
     adapter.close?.();

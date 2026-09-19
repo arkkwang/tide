@@ -21,7 +21,7 @@ export interface Utterance {
   text: string;
 }
 
-export const SPOKEN_COUNT = 20;
+export const SPOKEN_COUNT = 10;
 export const SPOKEN_CHARS = 80;
 
 /** What the session was doing when its transcript / rollout file ended. Orthogonal to whether
