@@ -12,7 +12,7 @@ export interface WindowInfo {
 
 export interface QuotaInfo {
   allowed: boolean;
-  blockedReason: "window" | "credits" | "unknown" | null;
+  blockedReason: "window" | "credits" | "rate_limit" | "unknown" | null;
   primary: WindowInfo | null;
   secondary: WindowInfo | null;
   nextResetAt: number | null;

@@ -1,10 +1,9 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type FilterPolicy, type CodexConfig } from "./config.js";
-import { messageText, oneLine } from "./util.js";
+import { messageText, oneLine, runChildProcess } from "./util.js";
 import {
   SPOKEN_CHARS,
   SPOKEN_COUNT,
@@ -274,7 +273,7 @@ export class CodexAdapter implements Adapter {
     private readonly onDebug: (msg: string) => void,
     private readonly watch: FilterPolicy,
     private readonly config: CodexConfig,
-    private readonly execute: typeof run = run,
+    private readonly execute: typeof runChildProcess = runChildProcess,
   ) {}
 
   resolveBin(): string {
@@ -485,76 +484,4 @@ export function parseRollout(file: string): ThreadState | null {
 
   if (!sessionId || !latest) return null;
   return { sessionId, cwd, source, parentThreadId, ...latest, spoken };
-}
-
-// ── process helpers (only used here) ─────────────────────────────────────────────────────
-
-const STDOUT_TAIL_BYTES = 64 * 1024;
-
-interface RunResult {
-  /** Exit code; null when the process never started or was killed on timeout. */
-  code: number | null;
-  timedOut: boolean;
-  /** Why it failed to start, as opposed to starting and then failing. */
-  spawnError: string | null;
-  out: string;
-  err: string;
-}
-
-interface RunOptions {
-  cwd?: string;
-  timeoutMs: number;
-  env?: NodeJS.ProcessEnv;
-}
-
-async function run(bin: string, args: string[], opts: RunOptions): Promise<RunResult> {
-  const child: ChildProcess = spawn(bin, args, {
-    ...(opts.cwd ? { cwd: opts.cwd } : {}),
-    ...(opts.env ? { env: opts.env } : {}),
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  // Killing a child mid-write surfaces as EPIPE here; an unhandled `error` event on a stream
-  // takes the whole watcher down with it.
-  const ignore = () => {};
-  child.stdin?.on("error", ignore);
-  child.stdout?.on("error", ignore);
-  child.stderr?.on("error", ignore);
-
-  let out = "";
-  let err = "";
-  let spawnError: string | null = null;
-  let timedOut = false;
-  let timer: NodeJS.Timeout | null = null;
-
-  child.stdout?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk: string) => {
-    out += chunk;
-    if (out.length > STDOUT_TAIL_BYTES) out = out.slice(-STDOUT_TAIL_BYTES);
-  });
-  child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (chunk: string) => {
-    err += chunk;
-  });
-
-  return await new Promise<RunResult>((resolve) => {
-    const settle = (code: number | null) => {
-      if (timer) clearTimeout(timer);
-      resolve({ code, timedOut, spawnError, out, err });
-    };
-    child.once("error", (e) => {
-      spawnError = e.message;
-      settle(null);
-    });
-    // `close`, not `exit`: it fires once the stdio streams have ended too, so the output
-    // collected by the time this resolves is complete.
-    child.once("close", (code) => settle(code));
-
-    timer = setTimeout(() => {
-      timedOut = true;
-      try { child.kill(); } catch {}
-      settle(null);
-    }, opts.timeoutMs);
-  });
 }

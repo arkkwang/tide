@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { CodexAdapter, resolveCodexBin } from "./codex.js";
+import { ClaudeAdapter, resolveClaudeBin } from "./claude.js";
 import {
   Watcher,
   printWaitingSession,
@@ -18,14 +19,20 @@ export function buildAdapters(
   const adapters: Adapter[] = [];
   const problems: string[] = [];
 
-  if (cli !== undefined && cli !== "codex") {
-    return { adapters, problems: [`unknown --cli "${cli}" — this build watches codex`] };
+  if (cli !== undefined && cli !== "codex" && cli !== "claude") {
+    return { adapters, problems: [`unknown --cli "${cli}" — this build watches codex, claude`] };
   }
 
   if ((cli === undefined || cli === "codex") && config.codex.enabled) {
     const bin = resolveCodexBin(config.codex.bin);
     if (bin) adapters.push(new CodexAdapter(bin, () => {}, config.filter, config.codex));
     else problems.push("codex: could not locate the CLI (set codex.bin or CODEX_BIN)");
+  }
+
+  if ((cli === undefined || cli === "claude") && config.claude.enabled) {
+    const bin = resolveClaudeBin(config.claude.bin);
+    if (bin) adapters.push(new ClaudeAdapter(bin, () => {}, config.filter, config.claude));
+    else problems.push("claude: could not locate the CLI (set claude.bin or CLAUDE_BIN)");
   }
   // Never silent: an empty adapter list with no explanation is the one failure a user
   // cannot act on.
@@ -102,6 +109,7 @@ export async function commandStatus(
             filter: config.filter,
             resume: config.resume,
             codex: config.codex,
+            claude: config.claude,
           },
         },
         null,
@@ -160,6 +168,9 @@ export async function commandStatus(
   );
   console.log(
     `  codex:   ${config.codex.enabled ? "enabled" : "disabled"}`,
+  );
+  console.log(
+    `  claude:  ${config.claude.enabled ? "enabled" : "disabled"} (probe timeout ${config.claude.probeTimeoutSeconds}s, delivery timeout ${config.claude.deliveryTimeoutSeconds}s)`,
   );
   return 0;
 }
@@ -289,6 +300,9 @@ export function commandDoctor(config: Config, configPath: string | null): number
 
   const codexBin = resolveCodexBin(config.codex.bin);
   check("codex binary", !!codexBin, codexBin ?? "not found — set codex.bin or CODEX_BIN");
+
+  const claudeBin = resolveClaudeBin(config.claude.bin);
+  check("claude binary", !!claudeBin, claudeBin ?? "not found — set claude.bin or CLAUDE_BIN");
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
   return failures === 0 ? 0 : 1;

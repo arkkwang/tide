@@ -20,6 +20,17 @@ export interface CodexConfig {
   deliveryTimeoutSeconds: number;
 }
 
+export interface ClaudeConfig {
+  enabled: boolean;
+  bin: string;
+  /** Timeout for `claude --resume <id> -p` delivery. */
+  deliveryTimeoutSeconds: number;
+  /** Timeout for the readQuota probe (`claude -p` on a fresh session). */
+  probeTimeoutSeconds: number;
+  /** The minimal prompt we send to test whether the account is currently rate-limited. */
+  probePrompt: string;
+}
+
 export interface Config {
   stateDir: string;
   debug: boolean;
@@ -33,6 +44,7 @@ export interface Config {
   filter: FilterPolicy;
   resume: ResumePolicy;
   codex: CodexConfig;
+  claude: ClaudeConfig;
 }
 
 function packageRoot(): string {
@@ -72,6 +84,13 @@ export function defaultConfig(): Config {
       enabled: true,
       bin: "",
       deliveryTimeoutSeconds: 20,
+    },
+    claude: {
+      enabled: true,
+      bin: "",
+      deliveryTimeoutSeconds: 20,
+      probeTimeoutSeconds: 30,
+      probePrompt: "Respond with the single word: pong",
     },
   };
 }
@@ -121,6 +140,12 @@ export function loadConfig(explicitPath?: string): { config: Config; path: strin
   const config = merge(defaultConfig(), parsed as DeepPartial<Config>);
   if (!Number.isFinite(config.codex.deliveryTimeoutSeconds) || config.codex.deliveryTimeoutSeconds <= 0) {
     throw new Error("codex.deliveryTimeoutSeconds must be a positive number");
+  }
+  if (!Number.isFinite(config.claude.deliveryTimeoutSeconds) || config.claude.deliveryTimeoutSeconds <= 0) {
+    throw new Error("claude.deliveryTimeoutSeconds must be a positive number");
+  }
+  if (!Number.isFinite(config.claude.probeTimeoutSeconds) || config.claude.probeTimeoutSeconds <= 0) {
+    throw new Error("claude.probeTimeoutSeconds must be a positive number");
   }
   return { config, path };
 }

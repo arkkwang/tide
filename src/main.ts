@@ -10,7 +10,7 @@ Usage:
   tide doctor                                        Check that this machine can run it
 
 Options:
-  --cli <kind>      Only this CLI: codex
+  --cli <kind>      Only this CLI: codex, claude
   --prompt <text>   What resume sends (default: the configured resume prompt)
   --once            For watch: one pass instead of a loop
   --dry-run         Say what would happen without resuming anything

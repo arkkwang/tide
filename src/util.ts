@@ -1,3 +1,83 @@
+import { spawn, type ChildProcess } from "node:child_process";
+
+const STDOUT_TAIL_BYTES = 64 * 1024;
+
+export interface RunResult {
+  /** Exit code; null when the process never started or was killed on timeout. */
+  code: number | null;
+  timedOut: boolean;
+  /** Why it failed to start, as opposed to starting and then failing. */
+  spawnError: string | null;
+  out: string;
+  err: string;
+}
+
+export interface RunOptions {
+  cwd?: string;
+  timeoutMs: number;
+  env?: NodeJS.ProcessEnv;
+}
+
+/** Spawn a one-shot child process, capture stdout (tailed) / stderr (full), and settle on the
+ * first of: process error, process close, or timeout. Used by the Codex `queue` command and
+ * by the Claude `--resume` / `-p` delivery + probe paths. The shape is deliberately small so
+ * each caller can layer its own stdout parsing on top. */
+export async function runChildProcess(
+  bin: string,
+  args: string[],
+  opts: RunOptions,
+): Promise<RunResult> {
+  const child: ChildProcess = spawn(bin, args, {
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    ...(opts.env ? { env: opts.env } : {}),
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  // Killing a child mid-write surfaces as EPIPE here; an unhandled `error` event on a stream
+  // takes the whole watcher down with it.
+  const ignore = () => {};
+  child.stdin?.on("error", ignore);
+  child.stdout?.on("error", ignore);
+  child.stderr?.on("error", ignore);
+
+  let out = "";
+  let err = "";
+  let spawnError: string | null = null;
+  let timedOut = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  child.stdout?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    out += chunk;
+    if (out.length > STDOUT_TAIL_BYTES) out = out.slice(-STDOUT_TAIL_BYTES);
+  });
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    err += chunk;
+  });
+
+  return await new Promise<RunResult>((resolve) => {
+    const settle = (code: number | null) => {
+      if (timer) clearTimeout(timer);
+      resolve({ code, timedOut, spawnError, out, err });
+    };
+    child.once("error", (e) => {
+      spawnError = e.message;
+      settle(null);
+    });
+    // `close`, not `exit`: it fires once the stdio streams have ended too, so the output
+    // collected by the time this resolves is complete.
+    child.once("close", (code) => settle(code));
+
+    timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill(); } catch {}
+      settle(null);
+    }, opts.timeoutMs);
+  });
+}
+
 /** Normalize an OpenAI/Claude-style `content` payload to a flat string. `content` is either a
  * plain string or an array of parts whose `.text` carries the visible text — both shapes are
  * flattened, with non-text parts collapsed to empty so they contribute nothing to the result. */
