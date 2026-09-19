@@ -200,9 +200,11 @@ export class ClaudeAdapter implements Adapter {
     const timeoutMs = this.config.deliveryTimeoutSeconds * 1_000;
     // `--bg --resume` queues the message and returns immediately; `backgrounded` on stdout is
     // Claude Code's acknowledgement that it landed. If the TUI is still open it forks a copy.
+    // A background session otherwise runs in `manual` permission mode, where every tool call
+    // waits on an approval a headless session has no way to give.
     const result = await this.execute(
       this.bin,
-      ["--bg", "--resume", session.sessionId, prompt],
+      ["--bg", "--resume", session.sessionId, "--dangerously-skip-permissions", prompt],
       { cwd: pickCwd(session.cwd), timeoutMs },
     );
     if (result.spawnError) return { ok: false, delivered: false, via: "cli-resume", detail: result.spawnError };
