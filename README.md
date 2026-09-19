@@ -83,6 +83,12 @@ claude --bg --resume <session-id> "<prompt>"
 
 **注释** — 只写代码本身不能表达的事实——外来依赖的怪癖、平台陷阱、跨文件不变量。不写"为什么这样做"或"为什么没那样做"——那是工作记录的事。
 
+**`status` 描述 session 的运行时状态** — 6 个值,从结构化事件推断:`completed`(task 正常完成)、`running`(模型在响应用户 prompt)、`awaiting-input`(assistant 响应完了等用户下一条 prompt)、`aborted`(`turn_aborted` 外部中止)、`errored`(task_complete + 非 quota 错误)、`quota-limited`(task_complete + quota 错误)。`status` 跟 `parentThreadId`(subagent fork 标记)是**正交的两个轴**——一个 subagent 可以是 6 个 `status` 里的任何一个,subagent 标在 session metadata 上,不进 status 枚举。Codex 6 个都可达;Claude Code 没有 `task_started` / `turn_aborted` / 显式 task 完成事件的等价物,实际只产出 `completed` / `running` / `errored` / `quota-limited` 这 4 个,`aborted` 和 `awaiting-input` 对 claude 不可达。
+
+**Adapter 描述,Watcher 决策** — `Adapter.findSessions()` 扫盘、推断每个 session 的 `status` / `lastAssistantAt` / metadata,按 `lastAssistantAt` 倒序截前 `MAX_INTERRUPTED_SESSIONS` 条。`lastAssistantAt` 是 assistant 最后一次响应(纯文本或工具调用)的时间——同一语义,codex 用 `item_completed + AssistantMessage | FunctionCall`,claude 用最后一条 `assistant` 记录。`Watcher` 只对 `status === "quota-limited"` 的 session 做后续决策。`aborted` 几乎总是用户自己停的——tide 自动 resume 会覆盖用户的明确决定;`errored` 下次大概率还会挂;`completed` / `running` / `awaiting-input` 都不是中断状态。`tide resume <id>` 是用户主动命令,**不**做 status 判断——按 sessionId 匹配,任何 status 都接受,用户自己决定给哪个 session 发 prompt。Watcher 在 quota-limited 上叠 3 层:`!parentThreadId`(skipSubagents) → `lastAssistantAt <= now - idleMinutesBeforeResume` → `--session` allow list。`status` 命令展示 adapter 的原始列表,不替 watcher 做决策;`--limit <n>` 在 status 命令层把列表再截前 n 条,默认 `MAX_INTERRUPTED_SESSIONS`。
+
+**JSON schema 在 1.0 之前不稳定** — 字段可能改名、合并、删除,无 compat 层,无 deprecation warning。当前是 0.1.0,`policy.filter` 在 refactor 里已改为 `policy.watchPolicy`,未来还会有同类变化。外部消费者应当在 1.0 之前把 JSON 当成 unstable 来对待。
+
 macOS 不在本轮支持范围。
 
 ```bash

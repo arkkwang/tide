@@ -5,11 +5,11 @@ import {
   Watcher,
   printWaitingSession,
   type Adapter,
-  type InterruptedSession,
   type QuotaInfo,
+  type Session,
 } from "./watch.js";
+import { type Config, MAX_INTERRUPTED_SESSIONS } from "./config.js";
 import { formatDuration } from "./util.js";
-import { type Config, type FilterPolicy } from "./config.js";
 
 export function buildAdapters(
   config: Config,
@@ -53,7 +53,7 @@ interface StatusReport {
   usable: boolean | null;
   unreadable: string | null;
   quota: QuotaInfo | null;
-  waiting: InterruptedSession[];
+  sessions: Session[];
 }
 
 export async function commandStatus(
@@ -61,6 +61,7 @@ export async function commandStatus(
   configPath: string | null,
   cli: string | undefined,
   json: boolean,
+  limit: number | undefined,
 ): Promise<number> {
   const { adapters, problems } = buildAdapters(config, cli);
   for (const problem of problems) {
@@ -70,6 +71,7 @@ export async function commandStatus(
     return 2;
   }
 
+  const cap = limit ?? MAX_INTERRUPTED_SESSIONS;
   const reports: StatusReport[] = [];
   for (const adapter of adapters) {
     const report: StatusReport = {
@@ -78,8 +80,7 @@ export async function commandStatus(
       usable: null,
       unreadable: null,
       quota: null,
-      // Unfiltered by idle time, unlike the watcher's own list.
-      waiting: await adapter.findInterrupted(config.filter),
+      sessions: (await adapter.findSessions()).slice(0, cap),
     };
     try {
       report.quota = await adapter.readQuota();
@@ -106,11 +107,11 @@ export async function commandStatus(
             secondary: r.quota?.secondary ?? null,
             nextResetAt: r.quota?.nextResetAt ?? null,
             notes: r.quota?.notes ?? [],
-            waiting: r.waiting,
+            sessions: r.sessions,
           })),
           policy: {
             source: configPath,
-            filter: config.filter,
+            watchPolicy: config.watchPolicy,
             resume: config.resume,
             codex: config.codex,
             claude: config.claude,
@@ -165,49 +166,46 @@ export async function commandStatus(
     }
 
     console.log(
-      `  waiting:     ${report.waiting.length} quota-interrupted session(s) (${maxAgeLabel(config.filter)})`,
+      `  sessions:    ${report.sessions.length} session(s) (showing up to ${cap} most recent)`,
     );
-    for (const session of report.waiting) {
+    for (const session of report.sessions) {
       printWaitingSession(session, config);
     }
   }
 
   console.log(`\n=== policy (${configPath ?? "built-in defaults, no config file"}) ===`);
   console.log(
-    `  resume:  ${JSON.stringify(config.resume.prompt)}; Codex delivery timeout ${config.codex.deliveryTimeoutSeconds}s`,
+    `  resume:       ${JSON.stringify(config.resume.prompt)}; Codex delivery timeout ${config.codex.deliveryTimeoutSeconds}s`,
   );
   console.log(
-    `  codex:   ${config.codex.enabled ? "enabled" : "disabled"}`,
+    `  codex:        ${config.codex.enabled ? "enabled" : "disabled"}`,
   );
   console.log(
-    `  claude:  ${config.claude.enabled ? "enabled" : "disabled"} (probe timeout ${config.claude.probeTimeoutSeconds}s, delivery timeout ${config.claude.deliveryTimeoutSeconds}s)`,
+    `  claude:       ${config.claude.enabled ? "enabled" : "disabled"} (probe timeout ${config.claude.probeTimeoutSeconds}s, delivery timeout ${config.claude.deliveryTimeoutSeconds}s)`,
+  );
+  console.log(
+    `  watchPolicy:  idle ≥ ${config.watchPolicy.idleMinutesBeforeResume}m` +
+      (config.watchPolicy.skipSubagents ? ", skip subagents" : ", include subagents"),
   );
   return 0;
 }
 
-/** Every session a user-supplied id refers to, scanned with a filter that hides nothing. */
+/** Every session a user-supplied id resolves to, across all enabled adapters. The watcher is
+ * the one that decides which statuses to act on — `tide resume <id>` is a manual command and
+ * does not filter on status. */
 async function locateSessions(
   adapters: Adapter[],
   id: string,
-): Promise<Array<{ adapter: Adapter; session: InterruptedSession }>> {
-  const everything: FilterPolicy = { minIdleMinutes: 0, maxAgeMinutes: null, skipSubagents: false };
-  const matches: Array<{ adapter: Adapter; session: InterruptedSession }> = [];
+): Promise<Array<{ adapter: Adapter; session: Session }>> {
+  const matches: Array<{ adapter: Adapter; session: Session }> = [];
   for (const adapter of adapters) {
-    for (const session of await adapter.findInterrupted(everything)) {
+    for (const session of await adapter.findSessions()) {
       if (session.sessionId === id || session.sessionId.startsWith(id)) {
         matches.push({ adapter, session });
       }
     }
   }
   return matches;
-}
-
-function maxAgeLabel(filter: FilterPolicy): string {
-  if (filter.maxAgeMinutes === null) return "any age";
-  const hours = filter.maxAgeMinutes / 60;
-  return hours % 24 === 0
-    ? `the last ${hours / 24}d`
-    : `the last ${formatDuration(filter.maxAgeMinutes * 60_000)}`;
 }
 
 export async function commandResume(
@@ -240,8 +238,7 @@ export async function commandResume(
       adapter.close?.();
     }
     return refuse(
-      `no interrupted session matching "${id}" — only quota-stopped sessions tide has not already` +
-        " queued are listed; tide status shows the current list.",
+      `no session matching "${id}" — tide status shows the current list.`,
       1,
     );
   }

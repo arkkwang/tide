@@ -2,15 +2,21 @@ import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type ClaudeConfig, defaultStateDir, type FilterPolicy } from "./config.js";
+import {
+  MAX_INTERRUPTED_SESSIONS,
+  SCAN_MTIME_CUTOFF_MS,
+  type ClaudeConfig,
+  defaultStateDir,
+} from "./config.js";
 import { messageText, oneLine, runChildProcess } from "./util.js";
 import {
   SPOKEN_CHARS,
   SPOKEN_COUNT,
   type Adapter,
-  type InterruptedSession,
   type QuotaInfo,
   type ResumeResult,
+  type Session,
+  type SessionStatus,
   type Utterance,
 } from "./watch.js";
 
@@ -147,14 +153,14 @@ export class ClaudeAdapter implements Adapter {
     };
   }
 
-  async findInterrupted(filter: FilterPolicy): Promise<InterruptedSession[]> {
+  async findSessions(): Promise<Session[]> {
     const projectsDir = join(claudeConfigDir(), "projects");
     if (!existsSync(projectsDir)) {
       return [];
     }
 
-    const cutoff = filter.maxAgeMinutes === null ? 0 : Date.now() - filter.maxAgeMinutes * 60_000;
-    const found: InterruptedSession[] = [];
+    const cutoff = Date.now() - SCAN_MTIME_CUTOFF_MS;
+    const found: Session[] = [];
 
     for (const project of safeReaddir(projectsDir)) {
       const projectDir = join(projectsDir, project);
@@ -181,30 +187,30 @@ export class ClaudeAdapter implements Adapter {
           continue;
         }
         const state = inspectTranscriptTail(file);
-        if (!state || !state.quotaError) {
+        if (!state) {
           continue;
         }
 
-        // Age from the interruption, not the file: housekeeping records land after the turn ended.
-        const interruptedAt = state.errorAt ?? mtimeMs;
-        if (interruptedAt < cutoff) {
-          continue;
-        }
+        // Fall back to the file's mtime when no assistant response is recorded.
+        const lastAssistantAt = state.lastAssistantAt ?? mtimeMs;
 
         found.push({
           sessionId,
           cwd: state.cwd,
-          interruptedAt,
+          lastAssistantAt,
           model: state.model,
+          status: state.status,
           spoken: state.spoken,
         });
       }
     }
 
-    return found.sort((a, b) => b.interruptedAt - a.interruptedAt);
+    return found
+      .sort((a, b) => b.lastAssistantAt - a.lastAssistantAt)
+      .slice(0, MAX_INTERRUPTED_SESSIONS);
   }
 
-  async resume(session: InterruptedSession, prompt: string): Promise<ResumeResult> {
+  async resume(session: Session, prompt: string): Promise<ResumeResult> {
     if (process.platform !== "win32") {
       return { ok: false, delivered: false, deferred: true, via: "none", detail: "This delivery build supports Windows only" };
     }
@@ -306,9 +312,9 @@ const HUMAN_PROMPT_SOURCES = new Set(["typed", "queued", "suggestion_accepted"])
 const PROMPT_SOURCE = "promptSource";
 
 interface TailState {
-  quotaError: boolean;
+  status: SessionStatus;
   cwd: string;
-  errorAt: number | null;
+  lastAssistantAt: number | null;
   model: string | null;
   spoken: Utterance[];
 }
@@ -321,11 +327,11 @@ export function inspectTranscriptTail(
   const lines = readTailLines(file, maxBytes);
   const model = newestModel(lines);
   const spoken = recentUtterances(lines);
-
-  let lastError: { at: number; tag: string | null } | null = null;
-  let lastSuccessAfterError = false;
   let cwd = "";
 
+  // The most recent `assistant` record wins: it is what the session was doing when its transcript
+  // ended. A single assistant record can carry both text and tool_use blocks — either counts as
+  // one assistant response. Older assistant / user / summary records are ignored.
   for (let i = lines.length - 1; i >= 0; i--) {
     let record: Record<string, unknown>;
     try {
@@ -335,51 +341,21 @@ export function inspectTranscriptTail(
     }
     const type = record["type"];
     if (!cwd && typeof record["cwd"] === "string") cwd = record["cwd"] as string;
-
-    if (type === "assistant") {
-      if (record["isApiErrorMessage"] === true) {
-        if (!lastError) {
-          lastError = {
-            at: Date.parse(String(record["timestamp"] ?? "")) || 0,
-            tag: typeof record["error"] === "string" ? (record["error"] as string) : null,
-          };
-        }
-      } else if (!lastError) {
-        lastSuccessAfterError = true;
-        break;
-      }
+    if (type !== "assistant") {
+      continue;
     }
-    if (type === "user") {
-      if (lastError) break;
+    const at = Date.parse(String(record["timestamp"] ?? "")) || null;
+    if (record["isApiErrorMessage"] === true) {
+      const tag = typeof record["error"] === "string" ? (record["error"] as string) : null;
+      const status: SessionStatus = tag === QUOTA_ERROR_TAG ? "quota-limited" : "errored";
+      return { status, cwd, lastAssistantAt: at, model, spoken };
     }
+    return { status: "completed", cwd, lastAssistantAt: at, model, spoken };
   }
 
-  if (!lastError) {
-    return {
-      quotaError: false,
-      cwd,
-      errorAt: null,
-      spoken,
-      model,
-    };
-  }
-  if (lastSuccessAfterError) {
-    return {
-      quotaError: false,
-      cwd,
-      errorAt: null,
-      spoken,
-      model,
-    };
-  }
-
-  return {
-    quotaError: lastError.tag === QUOTA_ERROR_TAG,
-    cwd,
-    errorAt: lastError.at || null,
-    spoken,
-    model,
-  };
+  // No assistant record in the tail window — only a human prompt without any reply yet,
+  // so the session is waiting on the model, not on the user.
+  return { status: "running", cwd, lastAssistantAt: null, model, spoken };
 }
 
 function recentUtterances(lines: string[]): Utterance[] {

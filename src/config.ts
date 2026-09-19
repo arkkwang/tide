@@ -4,11 +4,21 @@ import { fileURLToPath } from "node:url";
 
 export type CliKind = "codex" | "claude";
 
-export interface FilterPolicy {
-  minIdleMinutes: number;
-  maxAgeMinutes: number | null;
+export interface WatcherPolicy {
+  /** A session must have been quiet for at least this long before the watcher resumes it. */
+  idleMinutesBeforeResume: number;
+  /** Skip subagent forks; only resume parent (top-level) sessions. */
   skipSubagents: boolean;
 }
+
+/** How many recent quota-interrupted sessions each adapter surfaces. The watcher layers its own
+ * idle / subagent / allow-list filters on top of this list. */
+export const MAX_INTERRUPTED_SESSIONS = 100;
+
+/** Performance cutoff for the file scan: skip rollout / transcript files whose mtime is older than
+ * this. Never exposed to callers — quota-interrupted sessions much older than this are not
+ * actionable. */
+export const SCAN_MTIME_CUTOFF_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export interface ResumePolicy {
   prompt: string;
@@ -36,7 +46,7 @@ export interface Config {
   /** Session ids (or prefixes) the watcher may resume. Ignored when sessionAll is true. */
   sessionAllowList: string[];
   sessionAll: boolean;
-  filter: FilterPolicy;
+  watchPolicy: WatcherPolicy;
   resume: ResumePolicy;
   codex: CodexConfig;
   claude: ClaudeConfig;
@@ -71,9 +81,8 @@ export function defaultConfig(): Config {
     skipQuotaCheck: false,
     sessionAllowList: [],
     sessionAll: false,
-    filter: {
-      minIdleMinutes: 5,
-      maxAgeMinutes: 24 * 60,
+    watchPolicy: {
+      idleMinutesBeforeResume: 5,
       skipSubagents: true,
     },
     resume: {

@@ -1,10 +1,10 @@
 import { commandDoctor, commandResume, commandStatus, startWatch } from "./commands.js";
-import { loadConfig, type Config } from "./config.js";
+import { loadConfig, MAX_INTERRUPTED_SESSIONS, type Config } from "./config.js";
 
 const USAGE = `tide — resume Codex / Claude Code sessions after a quota limit resets
 
 Usage:
-  tide status [--cli <kind>] [--json]                Account state, and what is waiting to resume
+  tide status [--cli <kind>] [--json] [--limit <n>]   Account state, and what is waiting to resume
   tide resume <session-id> [--cli <kind>] [--json]   Send one turn to one session, right now
   tide watch [--once]                                Watch and resume until you stop it (Ctrl-C)
   tide doctor                                        Check that this machine can run it
@@ -19,6 +19,7 @@ Options:
   --skip-quota-check  Skip the quota probe and resume any waiting session. Test/debug only.
   --session <id>    For watch: a session id the watcher may resume. Repeatable.
   --session-all     For watch: resume every waiting session regardless of --session list.
+  --limit <n>       For status: cap how many sessions to show (default: ${MAX_INTERRUPTED_SESSIONS})
   --json            Machine-readable output (status, resume)
   -h, --help        Show this help
 `;
@@ -29,6 +30,7 @@ interface Flags {
   cli?: string;
   prompt?: string;
   configPath?: string;
+  limit?: number;
   dryRun: boolean;
   debug: boolean;
   once: boolean;
@@ -53,7 +55,7 @@ function parseArgs(argv: string[]): Flags {
     sessionAll: false,
     session: [],
   };
-  const takesValue = ["--config", "--cli", "--prompt", "--session"];
+  const takesValue = ["--config", "--cli", "--prompt", "--session", "--limit"];
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "-h" || arg === "--help") {
@@ -72,6 +74,13 @@ function parseArgs(argv: string[]): Flags {
         flags.cli = value;
       } else if (arg === "--session") {
         flags.session.push(value);
+      } else if (arg === "--limit") {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+          flags.bad.push(`--limit must be a positive integer (got "${value}")`);
+        } else {
+          flags.limit = n;
+        }
       } else {
         flags.prompt = value;
       }
@@ -135,7 +144,7 @@ async function main(): Promise<number> {
     case "doctor":
       return commandDoctor(config, configPath);
     case "status":
-      return await commandStatus(config, configPath, flags.cli, flags.json);
+      return await commandStatus(config, configPath, flags.cli, flags.json, flags.limit);
     case "resume":
       return await commandResume(config, flags.cli, flags.positional[0], flags.json);
     case "watch":

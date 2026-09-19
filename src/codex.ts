@@ -2,15 +2,16 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type FilterPolicy, type CodexConfig } from "./config.js";
+import { MAX_INTERRUPTED_SESSIONS, SCAN_MTIME_CUTOFF_MS, type CodexConfig } from "./config.js";
 import { messageText, oneLine, runChildProcess } from "./util.js";
 import {
   SPOKEN_CHARS,
   SPOKEN_COUNT,
   type Adapter,
-  type InterruptedSession,
   type QuotaInfo,
   type ResumeResult,
+  type Session,
+  type SessionStatus,
   type Utterance,
   type WindowInfo,
 } from "./watch.js";
@@ -315,10 +316,10 @@ export class CodexAdapter implements Adapter {
     return quotaFromRateLimits(result);
   }
 
-  async findInterrupted(filter: FilterPolicy): Promise<InterruptedSession[]> {
+  async findSessions(): Promise<Session[]> {
     const roots = sessionRoots();
-    const cutoff = filter.maxAgeMinutes === null ? 0 : Date.now() - filter.maxAgeMinutes * 60_000;
-    const files: string[] = [];
+    const cutoff = Date.now() - SCAN_MTIME_CUTOFF_MS;
+    const files: Array<{ path: string; mtimeMs: number }> = [];
 
     for (const root of roots) {
       if (!existsSync(root)) {
@@ -328,38 +329,40 @@ export class CodexAdapter implements Adapter {
         try {
           const mtimeMs = Math.floor(statSync(file).mtimeMs);
           if (mtimeMs >= cutoff) {
-            files.push(file);
+            files.push({ path: file, mtimeMs });
           }
         } catch {
         }
       }
     }
 
-    const byThread = new Map<string, ThreadState>();
-    for (const file of files) {
-      const parsed = parseRollout(file);
-      if (!parsed || (filter.skipSubagents && parsed.parentThreadId)) {
+    const byThread = new Map<string, { state: ThreadState; mtimeMs: number }>();
+    for (const { path, mtimeMs } of files) {
+      const parsed = parseRollout(path);
+      if (!parsed) {
         continue;
       }
       const previous = byThread.get(parsed.sessionId);
-      if (!previous || parsed.at > previous.at) {
-        byThread.set(parsed.sessionId, parsed);
+      if (!previous || parsed.at > previous.state.at) {
+        byThread.set(parsed.sessionId, { state: parsed, mtimeMs });
       }
     }
 
     return [...byThread.values()]
-      .filter((s) => s.quota && s.at >= cutoff)
-      .map((s) => ({
+      .map(({ state: s, mtimeMs }) => ({
         sessionId: s.sessionId,
         cwd: s.cwd,
-        interruptedAt: s.at,
+        lastAssistantAt: s.lastAssistantAt ?? mtimeMs,
         source: s.source,
+        parentThreadId: s.parentThreadId,
+        status: s.status,
         spoken: s.spoken,
       }))
-      .sort((a, b) => b.interruptedAt - a.interruptedAt);
+      .sort((a, b) => b.lastAssistantAt - a.lastAssistantAt)
+      .slice(0, MAX_INTERRUPTED_SESSIONS);
   }
 
-  async resume(session: InterruptedSession, prompt: string): Promise<ResumeResult> {
+  async resume(session: Session, prompt: string): Promise<ResumeResult> {
     if (process.platform !== "win32") {
       return { ok: false, delivered: false, deferred: true, via: "none", detail: "This delivery build supports Windows only" };
     }
@@ -438,7 +441,8 @@ export interface ThreadState {
   parentThreadId: string | null;
   source: string | null;
   at: number;
-  quota: boolean;
+  status: SessionStatus;
+  lastAssistantAt: number | null;
   spoken: Utterance[];
 }
 /** Reads one rollout file and reports the thread's latest turn outcome (`at` in unix ms). */
@@ -457,7 +461,8 @@ export function parseRollout(file: string): ThreadState | null {
   let cwd = "";
   let source: string | null = null;
   let parentThreadId: string | null = null;
-  let latest: { at: number; quota: boolean } | null = null;
+  let latest: { at: number; status: SessionStatus } | null = null;
+  let lastAssistantAt: number | null = null;
   const spoken: Utterance[] = [];
 
   for (const line of text.split(/\r?\n/)) {
@@ -487,11 +492,22 @@ export function parseRollout(file: string): ThreadState | null {
 
     if (payload["type"] === "task_complete") {
       const error = payload["error"] as { codex_error_info?: string } | null;
-      latest = { at, quota: QUOTA_ERROR_TAGS.has(error?.codex_error_info ?? "") };
+      const codexInfo = error?.codex_error_info ?? "";
+      if (QUOTA_ERROR_TAGS.has(codexInfo)) {
+        latest = { at, status: "quota-limited" };
+      } else if (error) {
+        latest = { at, status: "errored" };
+      } else {
+        latest = { at, status: "completed" };
+      }
     }
 
-    if (payload["type"] === "task_started" || payload["type"] === "turn_aborted") {
-      latest = { at, quota: false };
+    if (payload["type"] === "task_started") {
+      latest = { at, status: "running" };
+    }
+
+    if (payload["type"] === "turn_aborted") {
+      latest = { at, status: "aborted" };
     }
 
     // Only a submitted message emits a `UserMessage` item; the `user` role is shared with
@@ -499,7 +515,8 @@ export function parseRollout(file: string): ThreadState | null {
     if (payload["type"] === "item_completed") {
       const item = payload["item"] as { type?: string; content?: unknown } | undefined;
       if (item?.type === "UserMessage") {
-        latest = { at, quota: false };
+        // The user just submitted a prompt; the session is now waiting on the model.
+        latest = { at, status: "running" };
         const said = oneLine(messageText(item.content), SPOKEN_CHARS);
         if (said) {
           spoken.push({ text: said });
@@ -508,11 +525,17 @@ export function parseRollout(file: string): ThreadState | null {
           }
         }
       }
+      // An assistant response is anything the model itself produced — a text reply
+      // (AssistantMessage) or a tool call (FunctionCall). FunctionCallOutput is the tool's
+      // reply, not an assistant response.
+      if (item?.type === "AssistantMessage" || item?.type === "FunctionCall") {
+        lastAssistantAt = at;
+      }
     }
   }
 
   if (!sessionId || !latest) {
     return null;
   }
-  return { sessionId, cwd, source, parentThreadId, ...latest, spoken };
+  return { sessionId, cwd, source, parentThreadId, ...latest, lastAssistantAt, spoken };
 }
