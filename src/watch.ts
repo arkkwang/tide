@@ -111,7 +111,9 @@ export class Watcher {
     log.info(`watcher started (dry-run=${this.deps.config.dryRun})`);
     while (!this.stopping) {
       await this.sweep();
-      if (this.stopping) break;
+      if (this.stopping) {
+        break;
+      }
       await this.sleep(IDLE_INTERVAL_MS);
     }
     log.info("watcher stopped");
@@ -124,7 +126,9 @@ export class Watcher {
 
   private async sweep(): Promise<void> {
     for (const adapter of this.deps.adapters) {
-      if (this.stopping) break;
+      if (this.stopping) {
+        break;
+      }
       await this.tryAdapter(adapter);
     }
   }
@@ -136,7 +140,9 @@ export class Watcher {
       const quota = await adapter.readQuota();
       if (quota.allowed) {
         for (const session of waiting) {
-          if (this.stopping) break;
+          if (this.stopping) {
+            break;
+          }
           if (config.dryRun) {
             log.info(`${adapter.kind}/${short(session.sessionId)}: [dry-run] would resume in ${session.cwd}`);
           } else {
