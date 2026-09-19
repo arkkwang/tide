@@ -123,20 +123,26 @@ export class Watcher {
   }
 
   private async sweep(): Promise<void> {
-    const { log, config } = this.deps;
     for (const adapter of this.deps.adapters) {
       if (this.stopping) break;
-      const waiting = await waitingSessions(adapter, config);
-      if (waiting.length === 0) continue;
+      await this.tryAdapter(adapter);
+    }
+  }
+
+  private async tryAdapter(adapter: Adapter): Promise<void> {
+    const { log, config } = this.deps;
+    const waiting = await waitingSessions(adapter, config);
+    if (waiting.length > 0) {
       const quota = await adapter.readQuota();
-      if (!quota.allowed) continue;
-      for (const session of waiting) {
-        if (this.stopping) break;
-        if (config.dryRun) {
-          log.info(`${adapter.kind}/${short(session.sessionId)}: [dry-run] would resume in ${session.cwd}`);
-          continue;
+      if (quota.allowed) {
+        for (const session of waiting) {
+          if (this.stopping) break;
+          if (config.dryRun) {
+            log.info(`${adapter.kind}/${short(session.sessionId)}: [dry-run] would resume in ${session.cwd}`);
+          } else {
+            await adapter.resume(session, config.resume.prompt);
+          }
         }
-        await adapter.resume(session, config.resume.prompt);
       }
     }
   }
