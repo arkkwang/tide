@@ -76,6 +76,20 @@ export async function waitingSessions(
   return interrupted.filter((s) => s.interruptedAt <= quietCutoff);
 }
 
+/** The most recent utterance that is not the resume prompt we sent — i.e. the last thing the
+ * person actually said. Null when every recorded utterance is one of our own resumes. */
+export function lastUserUtterance(
+  spoken: Utterance[] | undefined,
+  resumePrompt: string,
+): Utterance | null {
+  if (!spoken) return null;
+  for (let i = spoken.length - 1; i >= 0; i--) {
+    const said = spoken[i]!;
+    if (said.text !== resumePrompt) return said;
+  }
+  return null;
+}
+
 export interface WatcherDeps {
   config: Config;
   adapters: Adapter[];
@@ -140,6 +154,14 @@ export class Watcher {
     const waiting = await waitingSessions(adapter, config);
     console.info(`  ${adapter.kind}: ${waiting.length} waiting`);
     if (waiting.length === 0) return;
+    for (const session of waiting) {
+      const parts = [`${adapter.kind}/${short(session.sessionId)}`];
+      if (session.source) parts.push(`[${session.source}]`);
+      parts.push(session.cwd, oneLine(session.detail));
+      const last = lastUserUtterance(session.spoken, config.resume.prompt);
+      if (last) parts.push(`you said: ${JSON.stringify(oneLine(last.text, 80))}`);
+      console.info(`    ${parts.join("  ")}`);
+    }
     if (!config.skipQuotaCheck) {
       const quota = await adapter.readQuota();
       if (!quota.allowed) {
@@ -151,7 +173,7 @@ export class Watcher {
     } else {
       console.info(`  ${adapter.kind}: quota check skipped (--skip-quota-check)`);
     }
-    console.info(`  ${adapter.kind}: quota ok — resuming ${waiting.length}`);
+    console.info(`  ${adapter.kind}: quota ok — resuming ${waiting.length}${config.dryRun ? " (--dry-run)" : ""}`);
     for (const session of waiting) {
       if (this.stopping) {
         break;

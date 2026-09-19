@@ -298,9 +298,7 @@ export class CodexAdapter implements Adapter {
 
   async findInterrupted(filter: FilterPolicy): Promise<InterruptedSession[]> {
     const roots = sessionRoots();
-    const now = Date.now();
-    const cutoff = filter.maxAgeMinutes === null ? 0 : now - filter.maxAgeMinutes * 60_000;
-    const quietCutoff = now - filter.minIdleMinutes * 60_000;
+    const cutoff = filter.maxAgeMinutes === null ? 0 : Date.now() - filter.maxAgeMinutes * 60_000;
     const files: string[] = [];
 
     for (const root of roots) {
@@ -324,7 +322,7 @@ export class CodexAdapter implements Adapter {
     }
 
     return [...byThread.values()]
-      .filter((s) => s.quota && s.at >= cutoff && s.at <= quietCutoff)
+      .filter((s) => s.quota && s.at >= cutoff)
       .map((s) => ({
         cli: "codex" as const,
         sessionId: s.sessionId,

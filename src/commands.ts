@@ -2,7 +2,6 @@ import { mkdirSync } from "node:fs";
 import { CodexAdapter, resolveCodexBin } from "./codex.js";
 import {
   Watcher,
-  waitingSessions,
   type Adapter,
   type InterruptedSession,
   type QuotaInfo,
@@ -65,8 +64,9 @@ export async function commandStatus(
       usable: null,
       unreadable: null,
       quota: null,
-      // The call the watcher itself makes, so the two listings cannot disagree.
-      waiting: await waitingSessions(adapter, config),
+      // All quota-interrupted sessions, so the operator can see what just failed.
+      // The watcher applies its own idle filter (`waitingSessions`) before resuming.
+      waiting: await adapter.findInterrupted(config.filter),
     };
     try {
       report.quota = await adapter.readQuota();
@@ -146,17 +146,21 @@ export async function commandStatus(
     }
 
     console.log(
-      `  waiting:     ${report.waiting.length} interrupted session(s) matching the policy` +
-        ` (idle ${config.filter.minIdleMinutes}m, ${maxAgeLabel(config.filter)})`,
+      `  waiting:     ${report.waiting.length} quota-interrupted session(s) (${maxAgeLabel(config.filter)})`,
     );
     for (const session of report.waiting) {
-      // The model is the account this session belongs to, not just which cwd is waiting.
-      const account = session.model ? `  [${session.model}]` : "";
-      console.log(`      ${short(session.sessionId)}  ${session.cwd}${account}`);
+      const tags = [
+        session.model ? `[${session.model}]` : null,
+        session.source ? `[${session.source}]` : null,
+      ].filter((s): s is string => s !== null);
+      const tagStr = tags.length > 0 ? `  ${tags.join("  ")}` : "";
+      console.log(`      ${short(session.sessionId)}  ${session.cwd}${tagStr}`);
       console.log(`          ${oneLine(session.detail)}`);
-      // Quoted, so an utterance that begins or ends in punctuation stays legible as one.
       for (const said of session.spoken ?? []) {
-        console.log(`          said: ${JSON.stringify(said.text)}`);
+        // Distinguish what the user actually said from the resume prompt we sent, so a row of
+        // repeated `continue-from-where-you-left-off` is not mistaken for real conversation.
+        const tag = said.text === config.resume.prompt ? "↑ resume" : "you said";
+        console.log(`          ${tag}: ${JSON.stringify(said.text)}`);
       }
     }
   }

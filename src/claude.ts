@@ -39,7 +39,6 @@ export class ClaudeAdapter implements Adapter {
     if (!existsSync(projectsDir)) return [];
 
     const cutoff = filter.maxAgeMinutes === null ? 0 : Date.now() - filter.maxAgeMinutes * 60_000;
-    const quietCutoff = Date.now() - filter.minIdleMinutes * 60_000;
     const found: InterruptedSession[] = [];
 
     for (const project of safeReaddir(projectsDir)) {
@@ -62,8 +61,6 @@ export class ClaudeAdapter implements Adapter {
         // turn ended, and a refused-and-retried session stays fresh while nobody has spoken.
         const interruptedAt = state.errorAt ?? mtimeMs;
         if (interruptedAt < cutoff) continue;
-
-        if (state.spokenAt !== null && state.spokenAt > quietCutoff) continue;
 
         found.push({
           cli: "claude",
