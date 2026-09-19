@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 export type CliKind = "codex" | "claude";
 
 export interface WatcherPolicy {
+  /** How long the watcher waits between sweeps. */
+  sweepIntervalMinutes: number;
   /** A session must have been quiet for at least this long before the watcher resumes it. */
   idleMinutesBeforeResume: number;
   /** Skip subagent forks; only resume parent (top-level) sessions. */
@@ -88,6 +90,7 @@ export function defaultConfig(): Config {
     sessionAllowList: [],
     sessionAll: false,
     watchPolicy: {
+      sweepIntervalMinutes: 3,
       idleMinutesBeforeResume: 5,
       skipSubagents: true,
       maxMainSessions: 50,
@@ -153,6 +156,9 @@ export function loadConfig(explicitPath?: string): { config: Config; path: strin
     throw new Error(`config at ${path} must be a JSON object`);
   }
   const config = merge(defaultConfig(), parsed as DeepPartial<Config>);
+  if (!Number.isFinite(config.watchPolicy.sweepIntervalMinutes) || config.watchPolicy.sweepIntervalMinutes <= 0) {
+    throw new Error("watchPolicy.sweepIntervalMinutes must be a positive number");
+  }
   if (!Number.isFinite(config.codex.deliveryTimeoutSeconds) || config.codex.deliveryTimeoutSeconds <= 0) {
     throw new Error("codex.deliveryTimeoutSeconds must be a positive number");
   }

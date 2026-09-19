@@ -83,8 +83,6 @@ export interface Adapter {
   close?(): void;
 }
 
-export const IDLE_INTERVAL_MS = 30_000;
-
 /** Trim the sorted session list down to `cap` entries, reserving the first `maxMain` slots
  * for top-level (non-subagent) sessions. Subagent forks fill whatever room is left.
  * Inputs must already be sorted newest-first by `lastAssistantAt`.
@@ -232,13 +230,17 @@ export class Watcher {
   }
 
   async run(): Promise<void> {
-    console.info(`watcher started (dry-run=${this.deps.config.dryRun})`);
+    const { config } = this.deps;
+    const intervalMs = config.watchPolicy.sweepIntervalMinutes * 60_000;
+    console.info(
+      `watcher started (dry-run=${config.dryRun}, sweep every ${config.watchPolicy.sweepIntervalMinutes}m)`,
+    );
     while (!this.stopping) {
       await this.sweep();
       if (this.stopping) {
         break;
       }
-      await this.sleep(IDLE_INTERVAL_MS);
+      await this.sleep(intervalMs);
     }
     console.info("watcher stopped");
   }
