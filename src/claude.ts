@@ -69,12 +69,6 @@ export function resolveEndpoint(): string | null {
   return resolveSetting([ENDPOINT_KEY]);
 }
 
-export const CREDENTIAL_VARS = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"];
-
-function authToken(): string | null {
-  return resolveSetting(CREDENTIAL_VARS);
-}
-
 /**
  * Claude Code takes its model from any of these slots, and a transcript records only the model —
  * so a name from this list is what matches a session back to the group that declares it.
@@ -86,10 +80,6 @@ const MODEL_KEYS = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "ANTHROPIC_SMALL_FAST_MODEL",
 ];
-
-function probeModel(): string | null {
-  return resolveSetting(MODEL_KEYS);
-}
 
 export interface Account {
   env: Record<string, string>;
@@ -168,19 +158,7 @@ export function accountEnv(
   return { ...env, ...account.env };
 }
 
-function firstOf(env: Record<string, string>, keys: string[]): string | null {
-  for (const key of keys) {
-    const value = env[key];
-    if (value) return value;
-  }
-  return null;
-}
-
 const QUOTA_CACHE_MS = 60_000;
-
-const MESSAGES_API_VERSION = "2023-06-01";
-
-const PROBE_TIMEOUT_MS = 20_000;
 
 function resumeArgs(sessionId: string, prompt: string, autonomy: string): string[] {
   return [
@@ -194,14 +172,6 @@ function resumeArgs(sessionId: string, prompt: string, autonomy: string): string
     autonomy,
     prompt,
   ];
-}
-
-const PROBE_REQUEST = { text: "1", maxTokens: 1 };
-
-interface Credentials {
-  endpoint: string | null;
-  token: string | null;
-  model: string | null;
 }
 
 export class ClaudeAdapter implements Adapter {
@@ -260,81 +230,6 @@ export class ClaudeAdapter implements Adapter {
       return { accounts: parseAccounts(readFileSync(path, "utf8")), problem: null };
     } catch (err) {
       return { accounts: [], problem: `accounts file: ${(err as Error).message}` };
-    }
-  }
-
-  private credentialsFor(model: string | null): Credentials {
-    const account = accountForModel(this.declaredAccounts().accounts, model);
-    if (!account) {
-      return { endpoint: resolveEndpoint(), token: authToken(), model: probeModel() };
-    }
-    return {
-      endpoint: account.env[ENDPOINT_KEY] ?? null,
-      token: firstOf(account.env, CREDENTIAL_VARS),
-      model: firstOf(account.env, MODEL_KEYS),
-    };
-  }
-
-  async probe(sessions: InterruptedSession[]): Promise<boolean> {
-    const pending = new Map<string, Credentials>();
-    const models = sessions.length > 0 ? sessions.map((s) => s.model ?? null) : [null];
-    for (const model of models) {
-      const credentials = this.credentialsFor(model);
-      pending.set(`${credentials.endpoint ?? ""}|${credentials.model ?? ""}`, credentials);
-    }
-    for (const credentials of pending.values()) {
-      if (!(await this.probeOne(credentials))) return false;
-    }
-    return true;
-  }
-
-  private async probeOne(credentials: Credentials): Promise<boolean> {
-    const { endpoint, token, model } = credentials;
-    if (!endpoint) {
-      this.onDebug("claude probe: no endpoint configured; cannot probe");
-      return false;
-    }
-    if (!token) {
-      this.onDebug("claude probe: no auth token found");
-      return false;
-    }
-    if (!model) {
-      this.onDebug("claude probe: no model configured (ANTHROPIC_MODEL et al); cannot probe");
-      return false;
-    }
-
-    const url = `${endpoint.replace(/\/+$/, "")}/v1/messages`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "anthropic-version": MESSAGES_API_VERSION,
-          "x-api-key": token,
-          authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: PROBE_REQUEST.maxTokens,
-          messages: [{ role: "user", content: PROBE_REQUEST.text }],
-        }),
-        signal: controller.signal,
-      });
-
-      if (response.ok) return true;
-
-      const body = await response.text();
-      this.onDebug(`claude probe: HTTP ${response.status} ${oneLine(body)}`);
-
-      if (response.status >= 500) this.onDebug("claude probe: provider is unwell (5xx); will retry");
-      return false;
-    } catch (err) {
-      this.onDebug(`claude probe: ${(err as Error).message}`);
-      return false;
-    } finally {
-      clearTimeout(timer);
     }
   }
 

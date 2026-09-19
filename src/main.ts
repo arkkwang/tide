@@ -4,7 +4,6 @@ import { isStoreShim, oneLine } from "./child.js";
 import {
   Watcher,
   formatDuration,
-  resumeSession,
   short,
   waitingSessions,
   type Adapter,
@@ -13,7 +12,6 @@ import {
 } from "./watch.js";
 import {
   BoundaryError,
-  StateStore,
   createLogger,
   ensureStateDir,
   loadConfig,
@@ -42,8 +40,6 @@ Options:
   --json            Machine-readable output (status, resume)
   -h, --help        Show this help
 `;
-
-const RESUMED_SHOWN = 10;
 
 interface Flags {
   command: string;
@@ -170,7 +166,6 @@ async function commandStatus(
   for (const problem of problems) console.error(`  ! ${problem}`);
   if (adapters.length === 0) return 2;
 
-  const state = new StateStore(config.stateDir);
   const reports: StatusReport[] = [];
 
   for (const adapter of adapters) {
@@ -181,7 +176,7 @@ async function commandStatus(
       unreadable: null,
       quota: null,
       // The call the watcher itself makes, so the two listings cannot disagree.
-      waiting: await waitingSessions(adapter, state, config),
+      waiting: await waitingSessions(adapter, config),
     };
     try {
       report.quota = await adapter.readQuota();
@@ -192,8 +187,6 @@ async function commandStatus(
     reports.push(report);
     adapter.close?.();
   }
-
-  const resumed = state.all().filter((r) => r.resumedAt);
 
   if (json) {
     console.log(
@@ -212,8 +205,6 @@ async function commandStatus(
             notes: r.quota?.notes ?? [],
             waiting: r.waiting,
           })),
-          resumed: resumed.slice(-RESUMED_SHOWN),
-          needsAttention: state.all().filter((r) => r.deliveryUnknown),
           // The rules that produced the list above.
           policy: {
             source: configPath,
@@ -281,25 +272,10 @@ async function commandStatus(
     }
   }
 
-  if (resumed.length > 0) {
-    console.log(`\n=== resume history (${resumed.length}) ===`);
-    for (const record of resumed.slice(-RESUMED_SHOWN)) {
-      console.log(
-        `  ${record.resumedAt}  ${record.cli}/${short(record.sessionId)}  via ${record.cwd}`,
-      );
-    }
-  }
-
-  for (const record of state.all().filter((r) => r.deliveryUnknown)) {
-    console.log(`\n  ! ${record.cli}/${record.sessionId}: delivery outcome unknown; inspect the task before manually retrying`);
-  }
-
   console.log(`\n=== policy (${configPath ?? "built-in defaults, no config file"}) ===`);
   console.log(
-    `  resume:  ${JSON.stringify(config.resume.prompt)} x${config.resume.maxAttempts},` +
-      ` no sooner than ${config.resume.minIntervalMinutes}m apart; Codex delivery timeout ${config.codex.deliveryTimeoutSeconds}s`,
+    `  resume:  ${JSON.stringify(config.resume.prompt)}; Codex delivery timeout ${config.codex.deliveryTimeoutSeconds}s`,
   );
-  console.log(`  probe:   every ${config.resume.probeIntervalSeconds}s, for providers that give no reset time`);
   console.log(
     `  codex:   ${config.codex.enabled ? "enabled" : "disabled"}` +
       `, claude: ${config.claude.enabled ? "enabled" : "disabled"} (autonomy ${config.claude.autonomy})`,
@@ -361,10 +337,9 @@ async function commandResume(
     console.log(`  prompt:   ${text}`);
   }
 
-  // `resumeSession` writes the record either way, so the watcher will not repeat this while
-  // the turn we just started is still running.
-  const state = new StateStore(config.stateDir);
-  const result = await resumeSession(adapter, session, text, state, config, silentLogger);
+  const result = config.dryRun
+    ? { ok: true, delivered: false, via: "dry-run", detail: `would resume in ${session.cwd}` }
+    : await adapter.resume(session, text);
   if (json) {
     console.log(
       JSON.stringify(
@@ -505,7 +480,7 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const watcher = new Watcher({ config, state: new StateStore(config.stateDir), log, adapters });
+  const watcher = new Watcher({ config, log, adapters });
   const shutdown = () => {
     log.info("shutting down…");
     watcher.stop();

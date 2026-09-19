@@ -187,10 +187,7 @@ export interface FilterPolicy {
 
 export interface ResumePolicy {
   prompt: string;
-  /** Only Claude Code needs this; Codex reports its own reset time, so the watcher sleeps. */
-  probeIntervalSeconds: number;
-  maxAttempts: number;
-  minIntervalMinutes: number;
+  /** Legacy: still bounds the Claude adapter's full-turn wait; the watcher no longer uses it. */
   timeoutMinutes: number;
 }
 
@@ -249,9 +246,6 @@ export function defaultConfig(): Config {
     },
     resume: {
       prompt: RESUME_PROMPT,
-      probeIntervalSeconds: 180,
-      maxAttempts: 5,
-      minIntervalMinutes: 10,
       timeoutMinutes: 30,
     },
     codex: {
@@ -319,88 +313,6 @@ export function loadConfig(explicitPath?: string): { config: Config; path: strin
 
 export function ensureStateDir(dir: string): void {
   mkdirOwned(dir);
-}
-
-// ── the memory ──────────────────────────────────────────────────────────────────────────
-
-export interface SessionRecord {
-  cli: CliKind;
-  sessionId: string;
-  /** Working directory the session belongs to; a resume must run from here. */
-  cwd: string;
-  reason: "quota" | "unknown";
-  detail: string;
-  interruptedAt: string;
-  /**
-   * Dedup key, and per *turn* rather than per session: a thread can hit the limit repeatedly
-   * and each of those is separately resumable.
-   */
-  turnKey: string;
-  /** Last acknowledged delivery for Codex; legacy Claude records mean a completed turn. */
-  resumedAt: string | null;
-  /**
-   * Last attempt, successful or not — the clock the retry cooldown reads, since a failed
-   * attempt leaves `resumedAt` null.
-   */
-  lastAttemptAt: string | null;
-  attempts: number;
-  lastError: string | null;
-  closed: boolean;
-  /** A send was started but not acknowledged. Do not automatically send it again. */
-  deliveryUnknown?: boolean;
-}
-
-interface StateFile {
-  version: 1;
-  sessions: Record<string, SessionRecord>;
-}
-
-const VERSION = 1;
-
-function sessionKey(cli: CliKind, sessionId: string): string {
-  return `${cli}:${sessionId}`;
-}
-
-/** The watcher's memory as one JSON file — keyed by session, not by interruption. */
-export class StateStore {
-  readonly file: string;
-  private data: StateFile;
-
-  constructor(stateDir: string) {
-    this.file = join(stateDir, "state.json");
-    this.data = this.read();
-  }
-
-  private read(): StateFile {
-    if (!existsSync(this.file)) return { version: VERSION, sessions: {} };
-    try {
-      const parsed = JSON.parse(readFileSync(this.file, "utf8")) as StateFile;
-      if (parsed?.version !== VERSION || typeof parsed.sessions !== "object") {
-        return { version: VERSION, sessions: {} };
-      }
-      return parsed;
-    } catch {
-      return { version: VERSION, sessions: {} };
-    }
-  }
-
-  save(): void {
-    const tmp = `${this.file}.tmp`;
-    writeOwned(tmp, JSON.stringify(this.data, null, 2));
-    renameSync(tmp, this.file);
-  }
-
-  get(cli: CliKind, sessionId: string): SessionRecord | undefined {
-    return this.data.sessions[sessionKey(cli, sessionId)];
-  }
-
-  all(): SessionRecord[] {
-    return Object.values(this.data.sessions);
-  }
-
-  upsert(record: SessionRecord): void {
-    this.data.sessions[sessionKey(record.cli, record.sessionId)] = record;
-  }
 }
 
 // ── the journal ─────────────────────────────────────────────────────────────────────────
