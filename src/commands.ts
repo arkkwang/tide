@@ -11,7 +11,6 @@ import {
 import { formatDuration } from "./util.js";
 import { type Config, type FilterPolicy } from "./config.js";
 
-/** Build the adapters to work with, optionally narrowed to the one `--cli` names. */
 export function buildAdapters(
   config: Config,
   cli?: string,
@@ -25,17 +24,21 @@ export function buildAdapters(
 
   if ((cli === undefined || cli === "codex") && config.codex.enabled) {
     const bin = resolveCodexBin(config.codex.bin);
-    if (bin) adapters.push(new CodexAdapter(bin, () => {}, config.codex));
-    else problems.push("codex: could not locate the CLI (set codex.bin or CODEX_BIN)");
+    if (bin) {
+      adapters.push(new CodexAdapter(bin, () => {}, config.codex));
+    } else {
+      problems.push("codex: could not locate the CLI (set codex.bin or CODEX_BIN)");
+    }
   }
 
   if ((cli === undefined || cli === "claude") && config.claude.enabled) {
     const bin = resolveClaudeBin(config.claude.bin);
-    if (bin) adapters.push(new ClaudeAdapter(bin, config.claude));
-    else problems.push("claude: could not locate the CLI (set claude.bin or CLAUDE_BIN)");
+    if (bin) {
+      adapters.push(new ClaudeAdapter(bin, config.claude));
+    } else {
+      problems.push("claude: could not locate the CLI (set claude.bin or CLAUDE_BIN)");
+    }
   }
-  // Never silent: an empty adapter list with no explanation is the one failure a user
-  // cannot act on.
   if (adapters.length === 0 && problems.length === 0) {
     problems.push(
       cli !== undefined ? `${cli}: not enabled in config` : "no CLI is enabled — check the config",
@@ -46,7 +49,6 @@ export function buildAdapters(
 
 interface StatusReport {
   cli: string;
-  /** Null when the adapter has no binary to name — reported as null, not as the word. */
   binary: string | null;
   usable: boolean | null;
   unreadable: string | null;
@@ -61,8 +63,12 @@ export async function commandStatus(
   json: boolean,
 ): Promise<number> {
   const { adapters, problems } = buildAdapters(config, cli);
-  for (const problem of problems) console.error(`  ! ${problem}`);
-  if (adapters.length === 0) return 2;
+  for (const problem of problems) {
+    console.error(`  ! ${problem}`);
+  }
+  if (adapters.length === 0) {
+    return 2;
+  }
 
   const reports: StatusReport[] = [];
   for (const adapter of adapters) {
@@ -72,8 +78,7 @@ export async function commandStatus(
       usable: null,
       unreadable: null,
       quota: null,
-      // All quota-interrupted sessions, so the operator can see what just failed.
-      // The watcher applies its own idle filter (`waitingSessions`) before resuming.
+      // Unfiltered by idle time, unlike the watcher's own list.
       waiting: await adapter.findInterrupted(config.filter),
     };
     try {
@@ -103,7 +108,6 @@ export async function commandStatus(
             notes: r.quota?.notes ?? [],
             waiting: r.waiting,
           })),
-          // The rules that produced the list above.
           policy: {
             source: configPath,
             filter: config.filter,
@@ -127,8 +131,12 @@ export async function commandStatus(
     if (quota) {
       const allowed = quota.allowed ? "yes" : "NO";
       console.log(`  usable now:  ${allowed}`);
-      if (quota.blockedReason) console.log(`  blocked by:  ${quota.blockedReason}`);
-      if (quota.plan) console.log(`  plan:        ${quota.plan}`);
+      if (quota.blockedReason) {
+        console.log(`  blocked by:  ${quota.blockedReason}`);
+      }
+      if (quota.plan) {
+        console.log(`  plan:        ${quota.plan}`);
+      }
       if (quota.primary) {
         console.log(
           `  5h window:   ${quota.primary.usedPercent}%` +
@@ -149,7 +157,9 @@ export async function commandStatus(
           `  next reset:  ${new Date(quota.nextResetAt * 1_000).toISOString()} (in ${formatDuration(untilMs)})`,
         );
       }
-      for (const note of quota.notes) console.log(`  note:        ${note}`);
+      for (const note of quota.notes) {
+        console.log(`  note:        ${note}`);
+      }
     } else {
       console.log(`  usable now:  unknown (${report.unreadable})`);
     }
@@ -175,7 +185,7 @@ export async function commandStatus(
   return 0;
 }
 
-/** Every session a user-supplied id refers to, scanned with an empty filter. */
+/** Every session a user-supplied id refers to, scanned with a filter that hides nothing. */
 async function locateSessions(
   adapters: Adapter[],
   id: string,
@@ -192,7 +202,6 @@ async function locateSessions(
   return matches;
 }
 
-/** "the last 24h", or "any age" when the window is unbounded. */
 function maxAgeLabel(filter: FilterPolicy): string {
   if (filter.maxAgeMinutes === null) return "any age";
   const hours = filter.maxAgeMinutes / 60;
@@ -207,7 +216,6 @@ export async function commandResume(
   id: string | undefined,
   json: boolean,
 ): Promise<number> {
-  /** The one sentence a caller reads instead of a paragraph it would have to parse. */
   const refuse = (detail: string, code: number): number => {
     if (json) console.log(JSON.stringify({ ok: false, detail }, null, 2));
     else console.error(detail);
@@ -219,12 +227,18 @@ export async function commandResume(
   }
 
   const { adapters, problems } = buildAdapters(config, cli);
-  for (const problem of problems) console.error(`  ! ${problem}`);
-  if (adapters.length === 0) return 2;
+  for (const problem of problems) {
+    console.error(`  ! ${problem}`);
+  }
+  if (adapters.length === 0) {
+    return 2;
+  }
 
   const matches = await locateSessions(adapters, id);
   if (matches.length === 0) {
-    for (const adapter of adapters) adapter.close?.();
+    for (const adapter of adapters) {
+      adapter.close?.();
+    }
     return refuse(
       `no interrupted session matching "${id}" — only quota-stopped sessions tide has not already` +
         " queued are listed; tide status shows the current list.",
@@ -233,7 +247,9 @@ export async function commandResume(
   }
   if (matches.length > 1) {
     const candidates = matches.map((m) => `${m.adapter.kind}/${m.session.sessionId}`).join(", ");
-    for (const adapter of adapters) adapter.close?.();
+    for (const adapter of adapters) {
+      adapter.close?.();
+    }
     return refuse(`"${id}" matches ${matches.length} sessions — use more of the id: ${candidates}`, 2);
   }
 
@@ -313,7 +329,9 @@ export async function startWatch(
   once: boolean,
 ): Promise<number> {
   const { adapters, problems } = buildAdapters(config, cli);
-  for (const problem of problems) console.error(`  ! ${problem}`);
+  for (const problem of problems) {
+    console.error(`  ! ${problem}`);
+  }
   if (adapters.length === 0) {
     console.error("no usable adapters — nothing to watch");
     return 1;
@@ -324,10 +342,13 @@ export async function startWatch(
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  if (once) await watcher.runOnce();
-  else await watcher.run();
-  // Kills are asynchronous on Windows (`taskkill /T`), so let the event loop drain here:
-  // calling `process.exit` would abandon them and leak the process trees.
-  for (const adapter of adapters) adapter.close?.();
+  if (once) {
+    await watcher.runOnce();
+  } else {
+    await watcher.run();
+  }
+  for (const adapter of adapters) {
+    adapter.close?.();
+  }
   return 0;
 }

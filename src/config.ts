@@ -23,11 +23,8 @@ export interface CodexConfig {
 export interface ClaudeConfig {
   enabled: boolean;
   bin: string;
-  /** Timeout for `claude --resume <id> -p` delivery. */
   deliveryTimeoutSeconds: number;
-  /** Timeout for the readQuota probe (`claude -p` on a fresh session). */
   probeTimeoutSeconds: number;
-  /** The minimal prompt we send to test whether the account is currently rate-limited. */
   probePrompt: string;
 }
 
@@ -35,11 +32,9 @@ export interface Config {
   stateDir: string;
   debug: boolean;
   dryRun: boolean;
-  /** When true, the watcher skips the quota probe and resumes any waiting session. Test/debug only. */
   skipQuotaCheck: boolean;
-  /** Session ids the watcher may resume. Empty means none. Ignored when sessionAll is true. */
+  /** Session ids (or prefixes) the watcher may resume. Ignored when sessionAll is true. */
   sessionAllowList: string[];
-  /** When true, the watcher resumes every waiting session regardless of sessionAllowList. */
   sessionAll: boolean;
   filter: FilterPolicy;
   resume: ResumePolicy;
@@ -50,9 +45,13 @@ export interface Config {
 function packageRoot(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   for (let dir = here; ; ) {
-    if (existsSync(join(dir, "package.json"))) return dir;
+    if (existsSync(join(dir, "package.json"))) {
+      return dir;
+    }
     const parent = dirname(dir);
-    if (parent === dir) return here;
+    if (parent === dir) {
+      return here;
+    }
     dir = parent;
   }
 }

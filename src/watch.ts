@@ -1,7 +1,4 @@
-/**
- * The watch loop, and the contract it demands of a CLI. `Adapter` lives beside the watcher
- * that consumes it; each supported CLI implements it in its own file.
- */
+/** The watch loop, and the `Adapter` contract each supported CLI implements in its own file. */
 import { type CliKind, type Config, type FilterPolicy } from "./config.js";
 import { humanizeIdleDuration, localTimestamp, oneLine, short } from "./util.js";
 
@@ -62,12 +59,8 @@ export interface Adapter {
 
 export const IDLE_INTERVAL_MS = 30_000;
 
-/** Detect quota-interrupted sessions and apply the idle filter: a session must have been quiet
- * for at least `config.filter.minIdleMinutes` (default 5) since its last task_complete before the
- * watcher will resume it. The cutoff protects against resuming a session that just produced the
- * error — the user might be at the screen about to react, or the CLI might be retrying itself.
- * Returns the survivors and the count dropped here, so the operator can tell the difference
- * between "the watcher found nothing" and "the watcher found something but it is too fresh". */
+/** Quota-interrupted sessions quiet for at least `filter.minIdleMinutes`; fresher ones come back
+ * as `notIdle` rather than being dropped. */
 export async function waitingSessions(
   adapter: Adapter,
   config: Config,
@@ -83,10 +76,7 @@ export async function waitingSessions(
   return { sessions, notIdle };
 }
 
-/** Apply the operator's allow list to the detected sessions. When sessionAll is set, returns them
- * all; otherwise each prefix narrows the list by `startsWith` (full ids always match themselves).
- * An ambiguous prefix is skipped with a warning rather than picking one — resuming the wrong
- * session is the worse error. */
+/** Narrow detected sessions to the operator's allow list by `startsWith`. */
 function applyAllowList(
   adapter: Adapter,
   detected: InterruptedSession[],
@@ -115,24 +105,24 @@ function applyAllowList(
   return sessions;
 }
 
-/** The most recent utterance that is not the resume prompt we sent — i.e. the last thing the
- * person actually said. Null when every recorded utterance is one of our own resumes. */
+/** The most recent utterance that is not the resume prompt we sent. */
 export function lastUserUtterance(
   spoken: Utterance[] | undefined,
   resumePrompt: string,
 ): Utterance | null {
-  if (!spoken) return null;
+  if (!spoken) {
+    return null;
+  }
   for (let i = spoken.length - 1; i >= 0; i--) {
     const said = spoken[i]!;
-    if (said.text !== resumePrompt) return said;
+    if (said.text !== resumePrompt) {
+      return said;
+    }
   }
   return null;
 }
 
-/** Print one waiting session in the multi-line format: an id/cwd header, then the last thing the
- * user actually said (skipping our own resume prompts), then how long this session has been idle
- * for. Shared by the watcher and the status command so the two views never disagree — every line
- * comes from the same helper. */
+/** One waiting session as a multi-line block, shared by the watcher and the `status` command. */
 export function printWaitingSession(session: InterruptedSession, config: Config): void {
   const tags = [
     session.model ? `[${session.model}]` : null,
@@ -145,16 +135,11 @@ export function printWaitingSession(session: InterruptedSession, config: Config)
   console.info(`          idle for: ${humanizeIdleDuration(Date.now() - session.interruptedAt)}`);
 }
 
-/** Run the quota probe (unless skipped), report the outcome, and say whether resume should proceed. */
 async function decideQuota(adapter: Adapter, config: Config): Promise<"proceed" | "blocked"> {
   if (config.skipQuotaCheck) {
     console.info(`  ${adapter.kind}: quota check skipped (--skip-quota-check)`);
     return "proceed";
   }
-  // A probe that fails to answer (provider unreachable, output not JSON, our own timeout) must
-  // not escape: an unhandled throw here unwinds `tryAdapter` → `sweep` → `run` and takes the
-  // whole watcher down, ending every later sweep with it. Treat "could not tell" as blocked —
-  // same fail-closed decision as a definite block, but only for this round.
   let quota: QuotaInfo;
   try {
     quota = await adapter.readQuota();
@@ -171,7 +156,6 @@ async function decideQuota(adapter: Adapter, config: Config): Promise<"proceed" 
   return "blocked";
 }
 
-/** Resume one session and log the outcome. In dry-run mode, just describe what would happen. */
 async function resumeSession(
   adapter: Adapter,
   session: InterruptedSession,
@@ -252,24 +236,32 @@ export class Watcher {
     const totalFound = detected.sessions.length + detected.notIdle.length;
     const allowFiltered = detected.sessions.length - allowed.length;
     const notes: string[] = [];
-    if (totalFound > 0) notes.push(`${totalFound} detected`);
+    if (totalFound > 0) {
+      notes.push(`${totalFound} detected`);
+    }
     if (detected.notIdle.length > 0) {
       const needMin = config.filter.minIdleMinutes;
       notes.push(`${detected.notIdle.length} not idle for ${needMin} minute${needMin === 1 ? "" : "s"} yet`);
     }
-    if (allowFiltered > 0) notes.push(`${allowFiltered} not in --session allow list`);
+    if (allowFiltered > 0) {
+      notes.push(`${allowFiltered} not in --session allow list`);
+    }
     const note = notes.length > 0 ? ` (${notes.join(", ")})` : "";
     console.info(`  ${adapter.kind}: ${allowed.length} waiting${note}`);
-    // Print every session through the same helper, so a `idle for:` line follows each block —
-    // including the ones still too fresh to resume.
     for (const session of [...allowed, ...detected.notIdle]) {
       printWaitingSession(session, config);
     }
-    if (allowed.length === 0) return;
-    if ((await decideQuota(adapter, config)) === "blocked") return;
+    if (allowed.length === 0) {
+      return;
+    }
+    if ((await decideQuota(adapter, config)) === "blocked") {
+      return;
+    }
     console.info(`  ${adapter.kind}: quota ok — resuming ${allowed.length}${config.dryRun ? " (--dry-run)" : ""}`);
     for (const session of allowed) {
-      if (this.stopping) break;
+      if (this.stopping) {
+        break;
+      }
       await resumeSession(adapter, session, config);
     }
   }

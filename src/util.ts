@@ -18,10 +18,7 @@ export interface RunOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-/** Spawn a one-shot child process, capture stdout (tailed) / stderr (full), and settle on the
- * first of: process error, process close, or timeout. Used by the Codex `queue` command and
- * by the Claude `--resume` / `-p` delivery + probe paths. The shape is deliberately small so
- * each caller can layer its own stdout parsing on top. */
+/** Spawn a one-shot child process, capturing stdout (tailed) and stderr (full). */
 export async function runChildProcess(
   bin: string,
   args: string[],
@@ -34,8 +31,6 @@ export async function runChildProcess(
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  // Killing a child mid-write surfaces as EPIPE here; an unhandled `error` event on a stream
-  // takes the whole watcher down with it.
   const ignore = () => {};
   child.stdin?.on("error", ignore);
   child.stdout?.on("error", ignore);
@@ -50,7 +45,9 @@ export async function runChildProcess(
   child.stdout?.setEncoding("utf8");
   child.stdout?.on("data", (chunk: string) => {
     out += chunk;
-    if (out.length > STDOUT_TAIL_BYTES) out = out.slice(-STDOUT_TAIL_BYTES);
+    if (out.length > STDOUT_TAIL_BYTES) {
+      out = out.slice(-STDOUT_TAIL_BYTES);
+    }
   });
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (chunk: string) => {
@@ -59,15 +56,16 @@ export async function runChildProcess(
 
   return await new Promise<RunResult>((resolve) => {
     const settle = (code: number | null) => {
-      if (timer) clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
       resolve({ code, timedOut, spawnError, out, err });
     };
     child.once("error", (e) => {
       spawnError = e.message;
       settle(null);
     });
-    // `close`, not `exit`: it fires once the stdio streams have ended too, so the output
-    // collected by the time this resolves is complete.
+    // `close`, not `exit`: it fires after stdio ends, so `out` and `err` are complete.
     child.once("close", (code) => settle(code));
 
     timer = setTimeout(() => {
@@ -78,9 +76,7 @@ export async function runChildProcess(
   });
 }
 
-/** Normalize an OpenAI/Claude-style `content` payload to a flat string. `content` is either a
- * plain string or an array of parts whose `.text` carries the visible text — both shapes are
- * flattened, with non-text parts collapsed to empty so they contribute nothing to the result. */
+/** Flatten an OpenAI/Claude-style `content` payload to a string; non-text parts contribute nothing. */
 export function messageText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -95,7 +91,7 @@ export function messageText(content: unknown): string {
 
 const MESSAGE_CHARS = 300;
 
-/** Collapse whitespace and truncate to one line, for displaying prose in fixed-width status output. */
+/** Collapse whitespace and truncate to one line. */
 export function oneLine(text: string, maxChars = MESSAGE_CHARS): string {
   const t = text.replace(/\s+/g, " ").trim();
   return t.length > maxChars ? `${t.slice(0, maxChars)}…` : t;
@@ -117,13 +113,12 @@ export function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
-/** Display the first 8 characters of a session id, the width that fits a status line. */
+/** The first 8 characters of a session id. */
 export function short(id: string): string {
   return id.slice(0, 8);
 }
 
-/** Local-time `HH:MM:SS`, for timestamps in operator-facing logs. Avoids the UTC half of the day
- * that `toISOString()` would otherwise print on machines not in the GMT offset. */
+/** Local-time `HH:MM:SS`, for operator-facing logs. */
 export function localTimestamp(d: Date = new Date()): string {
   const h = String(d.getHours()).padStart(2, "0");
   const m = String(d.getMinutes()).padStart(2, "0");
@@ -131,18 +126,24 @@ export function localTimestamp(d: Date = new Date()): string {
   return `${h}:${m}:${s}`;
 }
 
-/** Render a duration as "X hour(s) Y minute(s) Z second(s)" — a verbose form for logs that
- * ask "how long has this been idle". Distinct from `formatDuration`, which is the compact
- * `Nh Mm / Mm Ss / Ss` form reserved for status timestamps. */
+/** A duration as "X hour(s) Y minute(s) Z second(s)"; `formatDuration` is the compact form. */
 export function humanizeIdleDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
   const parts: string[] = [];
-  if (hours > 0) parts.push(`${hours} hour${hours === 1 ? "" : "s"}`);
-  if (minutes > 0) parts.push(`${minutes} minute${minutes === 1 ? "" : "s"}`);
-  if (seconds > 0) parts.push(`${seconds} second${seconds === 1 ? "" : "s"}`);
-  if (parts.length === 0) parts.push("0 seconds");
+  if (hours > 0) {
+    parts.push(`${hours} hour${hours === 1 ? "" : "s"}`);
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes} minute${minutes === 1 ? "" : "s"}`);
+  }
+  if (seconds > 0) {
+    parts.push(`${seconds} second${seconds === 1 ? "" : "s"}`);
+  }
+  if (parts.length === 0) {
+    parts.push("0 seconds");
+  }
   return parts.join(" ");
 }
