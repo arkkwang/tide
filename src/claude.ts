@@ -190,7 +190,6 @@ export class ClaudeAdapter implements Adapter {
       }
     }
 
-    return found
     return found.sort((a, b) => b.lastAssistantAt - a.lastAssistantAt);
   }
 

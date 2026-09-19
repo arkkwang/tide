@@ -95,7 +95,8 @@ export function capWithMainReserve(
   cap: number,
   maxMain: number,
 ): Session[] {
-  const mains = sorted.filter((s) => !s.isSubagent).slice(0, maxMain);
+  const mainBudget = Math.min(maxMain, cap);
+  const mains = sorted.filter((s) => !s.isSubagent).slice(0, mainBudget);
   if (mains.length >= cap) {
     return mains;
   }
@@ -310,6 +311,7 @@ export class Watcher {
       printWaitingSession(session, config);
     }
     if (allowed.length === 0) {
+      console.info(`  ${adapter.kind}: no sessions eligible for resume${note}`);
       return;
     }
     if ((await decideQuota(adapter, config)) === "blocked") {
