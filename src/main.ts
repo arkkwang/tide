@@ -1,5 +1,5 @@
 import { commandDoctor, commandResume, commandStatus, startWatch } from "./commands.js";
-import { loadConfig, MAX_INTERRUPTED_SESSIONS, type Config } from "./config.js";
+import { loadConfig, MAX_SESSIONS_RETURNED, type Config } from "./config.js";
 
 const USAGE = `tide — resume Codex / Claude Code sessions after a quota limit resets
 
@@ -19,7 +19,7 @@ Options:
   --skip-quota-check  Skip the quota probe and resume any waiting session. Test/debug only.
   --session <id>    For watch: a session id the watcher may resume. Repeatable.
   --session-all     For watch: resume every waiting session regardless of --session list.
-  --limit <n>       For status: cap how many sessions to show (default: ${MAX_INTERRUPTED_SESSIONS})
+  --limit <n>       For status: cap how many sessions to show (default: ${MAX_SESSIONS_RETURNED})
   --json            Machine-readable output (status, resume)
   -h, --help        Show this help
 `;

@@ -3,12 +3,13 @@ import { CodexAdapter, resolveCodexBin } from "./codex.js";
 import { ClaudeAdapter, resolveClaudeBin } from "./claude.js";
 import {
   Watcher,
+  capWithMainReserve,
   printWaitingSession,
   type Adapter,
   type QuotaInfo,
   type Session,
 } from "./watch.js";
-import { type Config, MAX_INTERRUPTED_SESSIONS } from "./config.js";
+import { type Config, MAX_SESSIONS_RETURNED } from "./config.js";
 import { formatDuration } from "./util.js";
 
 export function buildAdapters(
@@ -71,16 +72,17 @@ export async function commandStatus(
     return 2;
   }
 
-  const cap = limit ?? MAX_INTERRUPTED_SESSIONS;
+  const cap = limit ?? MAX_SESSIONS_RETURNED;
   const reports: StatusReport[] = [];
   for (const adapter of adapters) {
+    const all = await adapter.findSessions();
     const report: StatusReport = {
       cli: adapter.kind,
       binary: adapter.resolveBin(),
       usable: null,
       unreadable: null,
       quota: null,
-      sessions: (await adapter.findSessions()).slice(0, cap),
+      sessions: capWithMainReserve(all, cap, config.watchPolicy.maxMainSessions),
     };
     try {
       report.quota = await adapter.readQuota();

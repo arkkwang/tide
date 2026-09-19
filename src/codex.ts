@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { MAX_INTERRUPTED_SESSIONS, SCAN_MTIME_CUTOFF_MS, type CodexConfig } from "./config.js";
+import { SCAN_MTIME_CUTOFF_MS, type CodexConfig } from "./config.js";
 import { messageText, oneLine, runChildProcess } from "./util.js";
 import {
   SPOKEN_CHARS,
@@ -354,12 +354,12 @@ export class CodexAdapter implements Adapter {
         cwd: s.cwd,
         lastAssistantAt: s.lastAssistantAt ?? mtimeMs,
         source: s.source,
+        isSubagent: s.parentThreadId !== null,
         parentThreadId: s.parentThreadId,
         status: s.status,
         spoken: s.spoken,
       }))
-      .sort((a, b) => b.lastAssistantAt - a.lastAssistantAt)
-      .slice(0, MAX_INTERRUPTED_SESSIONS);
+      .sort((a, b) => b.lastAssistantAt - a.lastAssistantAt);
   }
 
   async resume(session: Session, prompt: string): Promise<ResumeResult> {

@@ -1,5 +1,5 @@
 /** The watch loop, and the `Adapter` contract each supported CLI implements in its own file. */
-import { type CliKind, type Config } from "./config.js";
+import { MAX_SESSIONS_RETURNED, type CliKind, type Config } from "./config.js";
 import { humanizeIdleDuration, localTimestamp, oneLine, short } from "./util.js";
 
 export interface WindowInfo {
@@ -44,8 +44,11 @@ export interface Session {
   lastAssistantAt: number;
   model?: string | null;
   source?: string | null;
-  /** Non-null only when this session is a subagent fork of another session. Orthogonal to
-   * `status` — a subagent can be in any of the `SessionStatus` values. */
+  /** True only when this session is a subagent fork of another session. The watcher skips
+   * subagents when `skipSubagents` is on; `parentThreadId` carries the parent id separately
+   * for code that needs to follow the link. Orthogonal to `status` — a subagent can be in any
+   * of the `SessionStatus` values. */
+  isSubagent: boolean;
   parentThreadId?: string | null;
   status: SessionStatus;
   spoken?: Utterance[];
@@ -68,9 +71,10 @@ export interface Adapter {
   /** Read the account's current quota state. Must not consume quota. */
   readQuota(): Promise<QuotaInfo>;
 
-  /** Most recent sessions, newest first, capped at MAX_INTERRUPTED_SESSIONS. Each carries a
-   * `status` describing what the session was doing when its file ended. The watcher decides
-   * which statuses it cares about; this method does not filter on status. */
+  /** All sessions the adapter can see, newest first. Each carries a `status` describing what the
+   * session was doing when its file ended. Adapters return everything they found within their
+   * scan cutoff; callers (status, watcher) decide how many to keep and apply their own filtering
+   * on top. */
   findSessions(): Promise<Session[]>;
 
   resume(session: Session, prompt: string): Promise<ResumeResult>;
@@ -79,6 +83,25 @@ export interface Adapter {
 }
 
 export const IDLE_INTERVAL_MS = 30_000;
+
+/** Trim the sorted session list down to `cap` entries, reserving the first `maxMain` slots
+ * for top-level (non-subagent) sessions. Subagent forks fill whatever room is left.
+ * Inputs must already be sorted newest-first by `lastAssistantAt`.
+ *
+ * Main sessions are the only ones the watcher may resume — guaranteeing them a slice keeps a
+ * burst of subagent forks from pushing parent quota-limited sessions out of the visible window. */
+export function capWithMainReserve(
+  sorted: Session[],
+  cap: number,
+  maxMain: number,
+): Session[] {
+  const mains = sorted.filter((s) => !s.isSubagent).slice(0, maxMain);
+  if (mains.length >= cap) {
+    return mains;
+  }
+  const subs = sorted.filter((s) => s.isSubagent).slice(0, cap - mains.length);
+  return [...mains, ...subs];
+}
 
 /** Narrow detected sessions to the operator's allow list by `startsWith`. */
 function applyAllowList(
@@ -132,7 +155,7 @@ export function printWaitingSession(session: Session, config: Config): void {
     `[${session.status}]`,
     session.model ? `[${session.model}]` : null,
     session.source ? `[${session.source}]` : null,
-    session.parentThreadId ? `[subagent]` : null,
+    session.isSubagent ? `[subagent]` : null,
   ].filter((s): s is string => s !== null);
   const tagStr = `  ${tags.join("  ")}`;
   console.info(`      ${short(session.sessionId)}  ${session.cwd}${tagStr}`);
@@ -237,7 +260,11 @@ export class Watcher {
 
   private async tryAdapter(adapter: Adapter): Promise<void> {
     const { config } = this.deps;
-    const all = await adapter.findSessions();
+    const all = capWithMainReserve(
+      await adapter.findSessions(),
+      MAX_SESSIONS_RETURNED,
+      config.watchPolicy.maxMainSessions,
+    );
     const policy = config.watchPolicy;
 
     // Only sessions stopped by a quota error are eligible for resume. `aborted` almost always
@@ -247,9 +274,9 @@ export class Watcher {
     const resumable = all.filter((s) => s.status === "quota-limited");
     const nonResumable = all.length - resumable.length;
 
-    // skipSubagents is a metadata filter on `parentThreadId`, orthogonal to `status`.
+    // skipSubagents is a metadata filter on `isSubagent`, orthogonal to `status`.
     const afterSubagent = policy.skipSubagents
-      ? resumable.filter((s) => !s.parentThreadId)
+      ? resumable.filter((s) => !s.isSubagent)
       : [...resumable];
     const subagentSkipped = resumable.length - afterSubagent.length;
 

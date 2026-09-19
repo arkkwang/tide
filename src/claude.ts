@@ -3,7 +3,6 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, read
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  MAX_INTERRUPTED_SESSIONS,
   SCAN_MTIME_CUTOFF_MS,
   type ClaudeConfig,
   defaultStateDir,
@@ -168,46 +167,31 @@ export class ClaudeAdapter implements Adapter {
         continue;
       }
       for (const entry of safeReaddir(projectDir)) {
-        if (!entry.endsWith(".jsonl")) {
+        const entryPath = join(projectDir, entry);
+        if (entry.endsWith(".jsonl")) {
+          collectMainSession(found, null, entry, entryPath, cutoff, this.resumedSessions);
           continue;
         }
-        const sessionId = entry.replace(/\.jsonl$/, "");
-        // Already queued by tide: nobody is waiting on it.
-        if (this.resumedSessions.has(sessionId)) {
+        // `<parentSessionId>/subagents/agent-<agentId>.jsonl` lives one level deeper; the
+        // session id stays the file name (`agent-<agentId>`) so it matches the transcript.
+        if (!isDir(entryPath)) {
           continue;
         }
-        const file = join(projectDir, entry);
-        let mtimeMs: number;
-        try {
-          mtimeMs = statSync(file).mtimeMs;
-        } catch {
+        const subagentsDir = join(entryPath, "subagents");
+        if (!isDir(subagentsDir)) {
           continue;
         }
-        if (mtimeMs < cutoff) {
-          continue;
+        for (const sub of safeReaddir(subagentsDir)) {
+          if (!sub.startsWith("agent-") || !sub.endsWith(".jsonl")) {
+            continue;
+          }
+          collectMainSession(found, entry, sub, join(subagentsDir, sub), cutoff, this.resumedSessions);
         }
-        const state = inspectTranscriptTail(file);
-        if (!state) {
-          continue;
-        }
-
-        // Fall back to the file's mtime when no assistant response is recorded.
-        const lastAssistantAt = state.lastAssistantAt ?? mtimeMs;
-
-        found.push({
-          sessionId,
-          cwd: state.cwd,
-          lastAssistantAt,
-          model: state.model,
-          status: state.status,
-          spoken: state.spoken,
-        });
       }
     }
 
     return found
-      .sort((a, b) => b.lastAssistantAt - a.lastAssistantAt)
-      .slice(0, MAX_INTERRUPTED_SESSIONS);
+    return found.sort((a, b) => b.lastAssistantAt - a.lastAssistantAt);
   }
 
   async resume(session: Session, prompt: string): Promise<ResumeResult> {
@@ -258,6 +242,54 @@ export class ClaudeAdapter implements Adapter {
 
 function pickCwd(cwd: string): string {
   return cwd && existsSync(cwd) ? cwd : process.cwd();
+}
+
+/** True when this file lives under a `<sessionId>/subagents/` directory, i.e. it is a forked
+ * sub-agent of the parent session that owns the directory. The transcript itself may not
+ * carry a parent marker — Claude Code only puts sub-agents in that directory layout. */
+function isSubagentTranscript(file: string): boolean {
+  // `<...>/<parentSessionId>/subagents/agent-<id>.jsonl` — both path segments must be present.
+  return /[\\/]subagents[\\/]agent-[^\\/]+\.jsonl$/i.test(file);
+}
+
+function collectMainSession(
+  out: Session[],
+  parentSessionId: string | null,
+  entry: string,
+  file: string,
+  cutoff: number,
+  resumedSessions: Set<string>,
+): void {
+  const sessionId = entry.replace(/\.jsonl$/, "");
+  if (resumedSessions.has(sessionId)) {
+    return;
+  }
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(file).mtimeMs;
+  } catch {
+    return;
+  }
+  if (mtimeMs < cutoff) {
+    return;
+  }
+  const state = inspectTranscriptTail(file);
+  if (!state) {
+    return;
+  }
+  const lastAssistantAt = state.lastAssistantAt ?? mtimeMs;
+  const isSubagent = isSubagentTranscript(file);
+
+  out.push({
+    sessionId,
+    cwd: state.cwd,
+    lastAssistantAt,
+    model: state.model,
+    status: state.status,
+    spoken: state.spoken,
+    isSubagent,
+    parentThreadId: isSubagent ? parentSessionId : null,
+  });
 }
 
 function loadResumedFromDisk(): Set<string> {

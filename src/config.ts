@@ -9,11 +9,17 @@ export interface WatcherPolicy {
   idleMinutesBeforeResume: number;
   /** Skip subagent forks; only resume parent (top-level) sessions. */
   skipSubagents: boolean;
+  /** Reserve this many slots for top-level sessions in the adapter's result window. Subagent
+   * forks fill whatever room is left. Keeps a burst of subagents from pushing parent
+   * quota-limited sessions out of the visible window. */
+  maxMainSessions: number;
 }
 
-/** How many recent quota-interrupted sessions each adapter surfaces. The watcher layers its own
- * idle / subagent / allow-list filters on top of this list. */
-export const MAX_INTERRUPTED_SESSIONS = 100;
+/** Upper bound on the session list that callers (status, watcher) trim the adapter's result
+ * to. The adapter itself returns everything within its scan cutoff — the trim happens via
+ * `capWithMainReserve` so top-level sessions get a reserved slice before subagents fill in.
+ * Status defaults to this value unless `--limit` is smaller. */
+export const MAX_SESSIONS_RETURNED = 100;
 
 /** Performance cutoff for the file scan: skip rollout / transcript files whose mtime is older than
  * this. Never exposed to callers — quota-interrupted sessions much older than this are not
@@ -84,6 +90,7 @@ export function defaultConfig(): Config {
     watchPolicy: {
       idleMinutesBeforeResume: 5,
       skipSubagents: true,
+      maxMainSessions: 50,
     },
     resume: {
       prompt: RESUME_PROMPT,
