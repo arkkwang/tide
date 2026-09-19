@@ -1,236 +1,37 @@
-import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, openSync, readdirSync, readSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
+import { closeSync, existsSync, openSync, readdirSync, readSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { isStoreShim, messageText, oneLine, run, Witness } from "./child.js";
-import {
-  SPOKEN_CHARS,
-  SPOKEN_COUNT,
-  type Adapter,
-  type InterruptedSession,
-  type QuotaInfo,
-  type ResumeResult,
-  type Utterance,
-} from "./watch.js";
-import type { ClaudeConfig, FilterPolicy, ResumePolicy } from "./store.js";
+import { SPOKEN_CHARS, SPOKEN_COUNT, type Adapter, type InterruptedSession, type QuotaInfo, type ResumeResult, type Utterance } from "./watch.js";
+import { type FilterPolicy } from "./config.js";
+import { messageText, oneLine } from "./util.js";
 
-/**
- * Claude Code writes a normalized `error` enum on every API-error record, decoded from whatever
- * the provider returned; quota is decided by that field alone, never by the prose beside it.
- */
-export const QUOTA_ERROR_TAG = "rate_limit";
-
-export function resolveClaudeBin(explicit?: string): string | null {
-  const candidates = [explicit, process.env["CLAUDE_BIN"]].filter((v): v is string => !!v);
-  for (const candidate of candidates) {
-    if (existsSync(candidate) && !isStoreShim(candidate)) return candidate;
-  }
-  const which = spawnSync(process.platform === "win32" ? "where.exe" : "which", ["claude"], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  if (which.status === 0) {
-    const first = (which.stdout ?? "")
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .find((line) => line && existsSync(line) && !isStoreShim(line));
-    if (first) return first;
-  }
-  return null;
-}
-
-export function claudeConfigDir(): string {
+function claudeConfigDir(): string {
   return process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude");
 }
 
-function resolveSetting(keys: string[]): string | null {
-  for (const key of keys) {
-    const value = process.env[key];
-    if (value) return value;
-  }
-  for (const name of ["settings.json", "settings.local.json"]) {
-    const path = join(claudeConfigDir(), name);
-    if (!existsSync(path)) continue;
-    try {
-      const parsed = JSON.parse(readFileSync(path, "utf8")) as { env?: Record<string, string> };
-      for (const key of keys) {
-        const value = parsed.env?.[key];
-        if (value) return value;
-      }
-    } catch {
-    }
-  }
-  return null;
-}
-
-const ENDPOINT_KEY = "ANTHROPIC_BASE_URL";
-
-export function resolveEndpoint(): string | null {
-  return resolveSetting([ENDPOINT_KEY]);
-}
+/** Claude Code writes a normalized `error` enum on every API-error record, decoded from whatever
+ * the provider returned; quota is decided by that field alone, never by the prose beside it. */
+export const QUOTA_ERROR_TAG = "rate_limit";
 
 /**
- * Claude Code takes its model from any of these slots, and a transcript records only the model —
- * so a name from this list is what matches a session back to the group that declares it.
+ * Claude Code adapter: capability 1 (find interrupted sessions) is implemented and verified.
+ * Capabilities 2 (quota probe) and 3 (resume a turn) are placeholders — see README.
  */
-const MODEL_KEYS = [
-  "ANTHROPIC_MODEL",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "ANTHROPIC_SMALL_FAST_MODEL",
-];
-
-export interface Account {
-  env: Record<string, string>;
-  models: string[];
-}
-
-const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-export function parseAccounts(text: string): Account[] {
-  const accounts: Account[] = [];
-  let current: Record<string, string> | null = null;
-
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) {
-      current = null;
-      continue;
-    }
-    if (line.startsWith("#")) continue;
-    const at = line.indexOf("=");
-    if (at <= 0) continue;
-    const key = line.slice(0, at).trim();
-    if (!VARIABLE_NAME.test(key)) continue;
-    if (!current) {
-      current = {};
-      accounts.push({ env: current, models: [] });
-    }
-    current[key] = unquote(line.slice(at + 1).trim());
-  }
-
-  for (const account of accounts) {
-    account.models = MODEL_KEYS.map((key) => account.env[key]).filter((v): v is string => !!v);
-  }
-  return accounts;
-}
-
-function unquote(value: string): string {
-  const quote = value[0];
-  if (value.length >= 2 && (quote === '"' || quote === "'") && value.endsWith(quote)) {
-    return value.slice(1, -1);
-  }
-  return value;
-}
-
-/**
- * What a model name may carry in brackets: a context-window size, as in `MiniMax-M3[1m]`. The
- * group file spells it and the transcript does not, so comparison drops it from both.
- */
-const CONTEXT_SUFFIX = "[";
-
-function modelStem(name: string): string {
-  const at = name.indexOf(CONTEXT_SUFFIX);
-  return (at === -1 ? name : name.slice(0, at)).trim();
-}
-
-export function accountForModel(accounts: Account[], model: string | null): Account | null {
-  if (!model) return null;
-  const stem = modelStem(model);
-  return accounts.find((account) => account.models.some((m) => modelStem(m) === stem)) ?? null;
-}
-
-/**
- * A group file describes alternatives, not additions: the sourcing script unsets every name the
- * file mentions before applying the group it was asked for, and a resume has to do the same.
- */
-export function accountEnv(
-  accounts: Account[],
-  account: Account | null,
-  base: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
-  if (!account) return base;
-  const env: NodeJS.ProcessEnv = { ...base };
-  for (const other of accounts) {
-    for (const key of Object.keys(other.env)) delete env[key];
-  }
-  return { ...env, ...account.env };
-}
-
-const QUOTA_CACHE_MS = 60_000;
-
-function resumeArgs(sessionId: string, prompt: string, autonomy: string): string[] {
-  return [
-    "-p",
-    "--resume",
-    sessionId,
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--permission-mode",
-    autonomy,
-    prompt,
-  ];
-}
-
 export class ClaudeAdapter implements Adapter {
   readonly kind = "claude" as const;
-  private readonly endpoint: string | null;
-  private quotaCache: QuotaInfo | null = null;
-  private quotaCacheAt = 0;
 
   constructor(
     private readonly bin: string,
     private readonly onDebug: (msg: string) => void,
     private readonly watch: FilterPolicy,
-    private readonly config: ClaudeConfig,
-    private readonly resumePolicy: ResumePolicy,
-  ) {
-    this.endpoint = resolveEndpoint();
-  }
+  ) {}
 
   resolveBin(): string {
     return this.bin;
   }
 
   async readQuota(): Promise<QuotaInfo> {
-    const now = Date.now();
-    if (this.quotaCache && now - this.quotaCacheAt < QUOTA_CACHE_MS) return this.quotaCache;
-
-    const recent = await this.findInterrupted({ ...this.watch, minIdleMinutes: 0 });
-    const { accounts, problem } = this.declaredAccounts();
-    const notes: string[] = [];
-    if (problem) notes.push(problem);
-    const endpoints = [...new Set(accounts.map((a) => a.env[ENDPOINT_KEY]).filter((v): v is string => !!v))];
-    if (endpoints.length > 0) notes.push(`accounts: ${endpoints.join(", ")}`);
-    else if (this.endpoint) notes.push(`endpoint: ${this.endpoint}`);
-    if (endpoints.length > 0 || this.endpoint) {
-      notes.push("no reset instant is exposed here — recovery is detected by probing");
-    }
-    const blocked = recent.length > 0;
-    const info: QuotaInfo = {
-      allowed: !blocked,
-      blockedReason: blocked ? "window" : null,
-      primary: null,
-      secondary: null,
-      nextResetAt: null,
-      plan: null,
-      notes,
-    };
-    this.quotaCache = info;
-    this.quotaCacheAt = now;
-    return info;
-  }
-
-  private declaredAccounts(): { accounts: Account[]; problem: string | null } {
-    const path = this.config.accounts;
-    if (!path) return { accounts: [], problem: null };
-    try {
-      return { accounts: parseAccounts(readFileSync(path, "utf8")), problem: null };
-    } catch (err) {
-      return { accounts: [], problem: `accounts file: ${(err as Error).message}` };
-    }
+    throw new Error("Claude quota probe is not yet implemented");
   }
 
   async findInterrupted(filter: FilterPolicy): Promise<InterruptedSession[]> {
@@ -281,67 +82,8 @@ export class ClaudeAdapter implements Adapter {
     return found.sort((a, b) => b.interruptedAt - a.interruptedAt);
   }
 
-  async resume(session: InterruptedSession, prompt: string): Promise<ResumeResult> {
-    const cwd = session.cwd && existsSync(session.cwd) ? session.cwd : process.cwd();
-    const args = resumeArgs(session.sessionId, prompt, this.config.autonomy);
-
-    const { accounts } = this.declaredAccounts();
-    const account = accountForModel(accounts, session.model ?? null);
-    const env = accountEnv(accounts, account, process.env);
-
-    this.onDebug(
-      `claude resume: ${this.bin} ${args.slice(0, 5).join(" ")} … (cwd=${cwd}` +
-        `, account=${account?.env[ENDPOINT_KEY] ?? "this process's own"})`,
-    );
-
-    const delivered = new Witness(
-      (record) =>
-        record["type"] === "system" &&
-        record["subtype"] === "init" &&
-        record["session_id"] === session.sessionId,
-    );
-    const quotaAgain = new Witness((record) => record["error"] === QUOTA_ERROR_TAG);
-
-    const minutes = this.resumePolicy.timeoutMinutes;
-
-    const result = await run(this.bin, args, {
-      cwd,
-      env,
-      timeoutMs: minutes * 60_000,
-      onStdout: (chunk) => {
-        delivered.push(chunk);
-        quotaAgain.push(chunk);
-      },
-    });
-
-    if (result.spawnError) {
-      return { ok: false, delivered: false, via: "resume", detail: result.spawnError };
-    }
-    if (!delivered.seen) {
-      const reason = oneLine(result.err || result.out);
-      return { ok: false, delivered: false, via: "resume", detail: reason || `exit ${result.code}` };
-    }
-    if (result.timedOut) {
-      return {
-        ok: false,
-        delivered: true,
-        via: "resume",
-        detail: `delivered, but the turn was still running after ${minutes}m (killed)`,
-      };
-    }
-    if (quotaAgain.seen) {
-      return { ok: false, delivered: true, via: "resume", detail: "delivered, but the turn hit the limit again" };
-    }
-    if (result.code === 0) {
-      return { ok: true, delivered: true, via: "resume", detail: "session continued" };
-    }
-    const reason = oneLine(result.err || result.out);
-    return {
-      ok: false,
-      delivered: true,
-      via: "resume",
-      detail: reason ? `delivered, then refused: ${reason}` : `delivered, then exit ${result.code}`,
-    };
+  async resume(_session: InterruptedSession, _prompt: string): Promise<ResumeResult> {
+    throw new Error("Claude resume is not yet implemented");
   }
 }
 
@@ -361,16 +103,12 @@ function isDir(path: string): boolean {
   }
 }
 
-/**
- * The model Claude Code writes on a record it composed itself (an API error, say), so a session
- * whose newest records are all of these still belongs to whatever account answered last.
- */
+/** The model Claude Code writes on a record it composed itself (an API error, say), so a session
+ * whose newest records are all of these still belongs to whatever account answered last. */
 const SYNTHETIC_MODEL = "<synthetic>";
 
-/**
- * `promptSource` is the only thing separating what a person typed from what the program stored in
- * a `user` role; a record without the field is not speech, so old transcripts show none of it.
- */
+/** `promptSource` is the only thing separating what a person typed from what the program stored in
+ * a `user` role; a record without the field is not speech, so old transcripts show none of it. */
 const HUMAN_PROMPT_SOURCES = new Set(["typed", "queued", "suggestion_accepted"]);
 const PROMPT_SOURCE = "promptSource";
 
@@ -380,10 +118,8 @@ interface TailState {
   errorAt: number | null;
   detail: string;
   model: string | null;
-  /**
-   * uuid of the newest record: the cheapest identity for how far the session got, and what tells
-   * one quota interruption from the next — timestamps are too coarse to.
-   */
+  /** uuid of the newest record: the cheapest identity for how far the session got, and what tells
+   * one quota interruption from the next — timestamps are too coarse to. */
   tailKey: string | null;
   spokenAt: number | null;
   spoken: Utterance[];

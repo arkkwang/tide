@@ -2,7 +2,8 @@
  * The watch loop, and the contract it demands of a CLI. `Adapter` lives beside the watcher
  * that consumes it; each supported CLI implements it in its own file.
  */
-import { type CliKind, type Config, type FilterPolicy, type Logger } from "./store.js";
+import { type CliKind, type Config, type FilterPolicy } from "./config.js";
+import { short } from "./util.js";
 
 export interface WindowInfo {
   usedPercent: number;
@@ -77,7 +78,6 @@ export async function waitingSessions(
 
 export interface WatcherDeps {
   config: Config;
-  log: Logger;
   adapters: Adapter[];
 }
 
@@ -107,8 +107,7 @@ export class Watcher {
   }
 
   async run(): Promise<void> {
-    const { log } = this.deps;
-    log.info(`watcher started (dry-run=${this.deps.config.dryRun})`);
+    console.info(`watcher started (dry-run=${this.deps.config.dryRun})`);
     while (!this.stopping) {
       await this.sweep();
       if (this.stopping) {
@@ -116,11 +115,11 @@ export class Watcher {
       }
       await this.sleep(IDLE_INTERVAL_MS);
     }
-    log.info("watcher stopped");
+    console.info("watcher stopped");
   }
 
   async runOnce(): Promise<void> {
-    this.deps.log.info(`single pass (dry-run=${this.deps.config.dryRun})`);
+    console.info(`single pass (dry-run=${this.deps.config.dryRun})`);
     await this.sweep();
   }
 
@@ -134,7 +133,7 @@ export class Watcher {
   }
 
   private async tryAdapter(adapter: Adapter): Promise<void> {
-    const { log, config } = this.deps;
+    const { config } = this.deps;
     const waiting = await waitingSessions(adapter, config);
     if (waiting.length > 0) {
       const quota = await adapter.readQuota();
@@ -144,7 +143,7 @@ export class Watcher {
             break;
           }
           if (config.dryRun) {
-            log.info(`${adapter.kind}/${short(session.sessionId)}: [dry-run] would resume in ${session.cwd}`);
+            console.info(`${adapter.kind}/${short(session.sessionId)}: [dry-run] would resume in ${session.cwd}`);
           } else {
             await adapter.resume(session, config.resume.prompt);
           }
@@ -152,23 +151,4 @@ export class Watcher {
       }
     }
   }
-}
-
-export function formatDuration(ms: number): string {
-  if (ms < 0) ms = 0;
-  const totalSeconds = Math.round(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}h${minutes}m`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m${seconds}s`;
-  }
-  return `${seconds}s`;
-}
-
-export function short(id: string): string {
-  return id.slice(0, 8);
 }

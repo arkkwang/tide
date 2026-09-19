@@ -1,11 +1,5 @@
 import { commandDoctor, commandResume, commandStatus, startWatch } from "./commands.js";
-import {
-  BoundaryError,
-  createLogger,
-  ensureStateDir,
-  loadConfig,
-  type Config,
-} from "./store.js";
+import { loadConfig, type Config } from "./config.js";
 
 const USAGE = `tide — resume Codex / Claude Code sessions after a quota limit resets
 
@@ -16,7 +10,7 @@ Usage:
   tide doctor                                        Check that this machine can run it
 
 Options:
-  --cli <kind>      Only this CLI: codex or claude
+  --cli <kind>      Only this CLI: codex
   --prompt <text>   What resume sends (default: the configured resume prompt)
   --once            For watch: one pass instead of a loop
   --dry-run         Say what would happen without resuming anything
@@ -28,7 +22,6 @@ Options:
 
 interface Flags {
   command: string;
-  /** Bare arguments, in order. `resume` takes a session id here. */
   positional: string[];
   cli?: string;
   prompt?: string;
@@ -37,7 +30,6 @@ interface Flags {
   debug: boolean;
   once: boolean;
   json: boolean;
-  /** Ready-to-print complaints: options we do not know, and ones left without their value. */
   bad: string[];
 }
 
@@ -61,7 +53,6 @@ function parseArgs(argv: string[]): Flags {
     }
     if (takesValue.includes(arg)) {
       const value = argv[++i];
-      // `undefined`, not falsy: `--cli ""` did supply a value, and it is a wrong one.
       if (value === undefined) {
         flags.bad.push(`${arg} needs a value`);
         continue;
@@ -73,7 +64,6 @@ function parseArgs(argv: string[]): Flags {
     else if (arg === "--debug") flags.debug = true;
     else if (arg === "--once") flags.once = true;
     else if (arg === "--json") flags.json = true;
-    // Recorded rather than thrown, so `--help` still answers over a typo.
     else if (arg.startsWith("-")) flags.bad.push(`unknown option: ${arg}`);
     else flags.positional.push(arg);
   }
@@ -112,9 +102,6 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  ensureStateDir(config.stateDir);
-  const log = createLogger(config.stateDir, config.debug);
-
   switch (flags.command) {
     case "doctor":
       return commandDoctor(config, configPath);
@@ -123,7 +110,7 @@ async function main(): Promise<number> {
     case "resume":
       return await commandResume(config, flags.cli, flags.positional[0], flags.json);
     case "watch":
-      return await startWatch(config, log, flags.cli, flags.once);
+      return await startWatch(config, flags.cli, flags.once);
     default:
       console.error(`unknown command: ${flags.command}`);
       console.error(USAGE);
@@ -136,6 +123,6 @@ main()
     process.exitCode = code;
   })
   .catch((err) => {
-    console.error(err instanceof BoundaryError ? err.message : err);
+    console.error((err as Error).message);
     process.exit(1);
   });

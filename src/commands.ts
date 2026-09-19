@@ -1,48 +1,31 @@
+import { mkdirSync } from "node:fs";
 import { CodexAdapter, resolveCodexBin } from "./codex.js";
-import { ClaudeAdapter, claudeConfigDir, resolveClaudeBin, resolveEndpoint } from "./claude.js";
-import { isStoreShim, oneLine } from "./child.js";
 import {
   Watcher,
-  formatDuration,
-  short,
   waitingSessions,
   type Adapter,
   type InterruptedSession,
   type QuotaInfo,
 } from "./watch.js";
-import {
-  ensureStateDir,
-  silentLogger,
-  type Config,
-  type FilterPolicy,
-  type Logger,
-} from "./store.js";
+import { formatDuration, oneLine, short } from "./util.js";
+import { type Config, type FilterPolicy } from "./config.js";
 
 /** Build the adapters to work with, optionally narrowed to the one `--cli` names. */
 export function buildAdapters(
   config: Config,
-  log: Logger,
   cli?: string,
 ): { adapters: Adapter[]; problems: string[] } {
   const adapters: Adapter[] = [];
   const problems: string[] = [];
 
-  if (cli !== undefined && cli !== "codex" && cli !== "claude") {
-    return { adapters, problems: [`unknown --cli "${cli}" — this build watches codex and claude`] };
+  if (cli !== undefined && cli !== "codex") {
+    return { adapters, problems: [`unknown --cli "${cli}" — this build watches codex`] };
   }
 
   if ((cli === undefined || cli === "codex") && config.codex.enabled) {
     const bin = resolveCodexBin(config.codex.bin);
-    if (bin) adapters.push(new CodexAdapter(bin, log.debug, config.filter, config.codex));
+    if (bin) adapters.push(new CodexAdapter(bin, () => {}, config.filter, config.codex));
     else problems.push("codex: could not locate the CLI (set codex.bin or CODEX_BIN)");
-  }
-  if ((cli === undefined || cli === "claude") && config.claude.enabled) {
-    const bin = resolveClaudeBin(config.claude.bin);
-    if (bin) {
-      adapters.push(
-        new ClaudeAdapter(bin, log.debug, config.filter, config.claude, config.resume),
-      );
-    } else problems.push("claude: could not locate the CLI (set claude.bin or CLAUDE_BIN)");
   }
   // Never silent: an empty adapter list with no explanation is the one failure a user
   // cannot act on.
@@ -70,7 +53,7 @@ export async function commandStatus(
   cli: string | undefined,
   json: boolean,
 ): Promise<number> {
-  const { adapters, problems } = buildAdapters(config, silentLogger, cli);
+  const { adapters, problems } = buildAdapters(config, cli);
   for (const problem of problems) console.error(`  ! ${problem}`);
   if (adapters.length === 0) return 2;
 
@@ -118,7 +101,6 @@ export async function commandStatus(
             filter: config.filter,
             resume: config.resume,
             codex: config.codex,
-            claude: config.claude,
           },
         },
         null,
@@ -184,8 +166,7 @@ export async function commandStatus(
     `  resume:  ${JSON.stringify(config.resume.prompt)}; Codex delivery timeout ${config.codex.deliveryTimeoutSeconds}s`,
   );
   console.log(
-    `  codex:   ${config.codex.enabled ? "enabled" : "disabled"}` +
-      `, claude: ${config.claude.enabled ? "enabled" : "disabled"} (autonomy ${config.claude.autonomy})`,
+    `  codex:   ${config.codex.enabled ? "enabled" : "disabled"}`,
   );
   return 0;
 }
@@ -233,7 +214,7 @@ export async function commandResume(
     return refuse("resume needs a session id: tide resume <session-id> [--cli <kind>]", 2);
   }
 
-  const { adapters, problems } = buildAdapters(config, silentLogger, cli);
+  const { adapters, problems } = buildAdapters(config, cli);
   for (const problem of problems) console.error(`  ! ${problem}`);
   if (adapters.length === 0) return 2;
 
@@ -307,7 +288,7 @@ export function commandDoctor(config: Config, configPath: string | null): number
   check("config", true, configPath ?? "built-in defaults, no config file");
   check("state dir", true, config.stateDir);
   try {
-    ensureStateDir(config.stateDir);
+    mkdirSync(config.stateDir, { recursive: true });
     check("state dir writable", true, "yes");
   } catch (err) {
     check("state dir writable", false, (err as Error).message);
@@ -315,19 +296,6 @@ export function commandDoctor(config: Config, configPath: string | null): number
 
   const codexBin = resolveCodexBin(config.codex.bin);
   check("codex binary", !!codexBin, codexBin ?? "not found — set codex.bin or CODEX_BIN");
-  if (codexBin && isStoreShim(codexBin)) {
-    check("codex binary usable", false, "resolved to the Store shim, which cannot be launched");
-  }
-
-  const claudeBin = resolveClaudeBin(config.claude.bin);
-  check("claude binary", !!claudeBin, claudeBin ?? "not found — set claude.bin or CLAUDE_BIN");
-  if (claudeBin && isStoreShim(claudeBin)) {
-    check("claude binary usable", false, "resolved to the Store shim, which cannot be launched");
-  }
-
-  const endpoint = resolveEndpoint();
-  check("claude endpoint", true, endpoint ?? "not set (Claude Code will use its own default)");
-  check("claude config dir", true, claudeConfigDir());
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
   return failures === 0 ? 0 : 1;
@@ -335,22 +303,18 @@ export function commandDoctor(config: Config, configPath: string | null): number
 
 export async function startWatch(
   config: Config,
-  log: Logger,
   cli: string | undefined,
   once: boolean,
 ): Promise<number> {
-  const { adapters, problems } = buildAdapters(config, log, cli);
-  for (const problem of problems) log.warn(problem);
+  const { adapters, problems } = buildAdapters(config, cli);
+  for (const problem of problems) console.error(`  ! ${problem}`);
   if (adapters.length === 0) {
-    log.error("no usable adapters — nothing to watch");
+    console.error("no usable adapters — nothing to watch");
     return 1;
   }
 
-  const watcher = new Watcher({ config, log, adapters });
-  const shutdown = () => {
-    log.info("shutting down…");
-    watcher.stop();
-  };
+  const watcher = new Watcher({ config, adapters });
+  const shutdown = () => watcher.stop();
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
