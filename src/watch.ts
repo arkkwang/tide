@@ -2,7 +2,7 @@
  * The watch loop, and the contract it demands of a CLI. `Adapter` lives beside the watcher
  * that consumes it; each supported CLI implements it in its own file.
  */
-import { unixMs, type CliKind, type Config, type FilterPolicy, type Logger } from "./store.js";
+import { type CliKind, type Config, type FilterPolicy, type Logger } from "./store.js";
 
 export interface WindowInfo {
   usedPercent: number;
@@ -65,9 +65,6 @@ export interface Adapter {
 }
 
 export const IDLE_INTERVAL_MS = 30_000;
-export const MIN_INTERVAL_MS = 1_000;
-const RESET_GRACE_MS = 15_000;
-export const MAX_RESET_WAIT_MS = 6 * 60 * 60_000;
 
 export async function waitingSessions(
   adapter: Adapter,
@@ -113,55 +110,35 @@ export class Watcher {
     const { log } = this.deps;
     log.info(`watcher started (dry-run=${this.deps.config.dryRun})`);
     while (!this.stopping) {
-      const sleepMs = await this.pass();
+      await this.sweep();
       if (this.stopping) break;
-      await this.sleep(Math.max(MIN_INTERVAL_MS, sleepMs));
+      await this.sleep(IDLE_INTERVAL_MS);
     }
     log.info("watcher stopped");
   }
 
-  async runOnce(): Promise<number> {
+  async runOnce(): Promise<void> {
     this.deps.log.info(`single pass (dry-run=${this.deps.config.dryRun})`);
-    return await this.pass();
+    await this.sweep();
   }
 
-  private async pass(): Promise<number> {
-    let sleepMs = IDLE_INTERVAL_MS;
+  private async sweep(): Promise<void> {
+    const { log, config } = this.deps;
     for (const adapter of this.deps.adapters) {
       if (this.stopping) break;
-      sleepMs = Math.min(sleepMs, await this.tick(adapter));
-    }
-    return sleepMs;
-  }
-
-  private async tick(adapter: Adapter): Promise<number> {
-    const { log, config } = this.deps;
-    const waiting = await waitingSessions(adapter, config);
-    if (waiting.length === 0) return IDLE_INTERVAL_MS;
-
-    const quota = await adapter.readQuota();
-    log.debug(
-      `${adapter.kind}: allowed=${quota.allowed} reason=${quota.blockedReason}` +
-        ` reset=${quota.nextResetAt ? new Date(unixMs(quota.nextResetAt)).toISOString() : "-"}`,
-    );
-
-    if (!quota.allowed) {
-      if (quota.nextResetAt) {
-        const untilResetMs = unixMs(quota.nextResetAt) - Date.now();
-        if (untilResetMs > 0) return Math.min(untilResetMs + RESET_GRACE_MS, MAX_RESET_WAIT_MS);
+      const waiting = await waitingSessions(adapter, config);
+      if (waiting.length === 0) continue;
+      const quota = await adapter.readQuota();
+      if (!quota.allowed) continue;
+      for (const session of waiting) {
+        if (this.stopping) break;
+        if (config.dryRun) {
+          log.info(`${adapter.kind}/${short(session.sessionId)}: [dry-run] would resume in ${session.cwd}`);
+          continue;
+        }
+        await adapter.resume(session, config.resume.prompt);
       }
-      return IDLE_INTERVAL_MS;
     }
-
-    for (const session of waiting) {
-      if (this.stopping) break;
-      if (config.dryRun) {
-        log.info(`${adapter.kind}/${short(session.sessionId)}: [dry-run] would resume in ${session.cwd}`);
-        continue;
-      }
-      await adapter.resume(session, config.resume.prompt);
-    }
-    return IDLE_INTERVAL_MS;
   }
 }
 
