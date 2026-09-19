@@ -19,7 +19,7 @@ Options:
   --skip-quota-check  Skip the quota probe and resume any waiting session. Test/debug only.
   --session <id>    For watch: a session id the watcher may resume. Repeatable.
   --session-all     For watch: resume every waiting session regardless of --session list.
-  --limit <n>       For status: cap how many sessions to show (default: ${MAX_SESSIONS_RETURNED})
+  --limit <n>       For status: cap how many sessions to show (default: ${MAX_SESSIONS_RETURNED}); watch ignores it
   --json            Machine-readable output (status, resume)
   -h, --help        Show this help
 `;
