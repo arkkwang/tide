@@ -10,6 +10,7 @@
   "scripts": {
     "build": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/tide.mjs --banner:js=\"#!/usr/bin/env node\"",
     "dev": "tsx src/main.ts",
+    "test": "tsx src/test-watch.ts",
     "typecheck": "tsc --noEmit"
   },
   "bin": {
