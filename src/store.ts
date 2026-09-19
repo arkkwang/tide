@@ -18,10 +18,6 @@ import { fileURLToPath } from "node:url";
 
 export type CliKind = "codex" | "claude";
 
-export function unixMs(seconds: number): number {
-  return seconds * 1_000;
-}
-
 // ── the boundary ────────────────────────────────────────────────────────────────────────
 
 /**

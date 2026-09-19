@@ -14,7 +14,7 @@ import {
   type WindowInfo,
 } from "./watch.js";
 import { randomUUID } from "node:crypto";
-import { unixMs, type FilterPolicy, type CodexConfig } from "./store.js";
+import { type FilterPolicy, type CodexConfig } from "./store.js";
 
 const QUOTA_ERROR_TAGS = new Set(["usage_limit_exceeded", "rate_limit_exceeded"]);
 
@@ -361,7 +361,7 @@ function pickCwd(cwd: string): string {
 }
 
 function describeIn(unixSeconds: number): string {
-  const ms = unixMs(unixSeconds) - Date.now();
+  const ms = unixSeconds * 1_000 - Date.now();
   if (ms <= 0) return "under a minute (may already have reset)";
   const mins = Math.floor(ms / 60_000);
   const hours = Math.floor(mins / 60);
