@@ -165,16 +165,3 @@ export function killTree(child: ChildProcess): Promise<void> {
   }
   return Promise.resolve();
 }
-
-const REAP_TIMEOUT_MS = 3_000;
-
-/** Callers that would otherwise call `process.exit` directly must use this: `process.exit`
- * terminates immediately, abandoning any kill still in flight and its process tree. */
-export async function shutdown(code: number, children: ChildProcess[]): Promise<never> {
-  const reap = Promise.all(children.map((c) => killTree(c)));
-  const guard = new Promise<void>((resolve) => {
-    setTimeout(resolve, REAP_TIMEOUT_MS).unref?.();
-  });
-  await Promise.race([reap, guard]);
-  process.exit(code);
-}

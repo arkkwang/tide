@@ -1,19 +1,16 @@
 /**
  * The one directory this program may write: its boundary, policy, memory and journal.
- * The CLIs' own directories are not ours; see `protectedRoots`.
+ * The CLIs' own directories are not ours; see `isProtected`.
  */
 import {
   appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
-  realpathSync,
-  renameSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type CliKind = "codex" | "claude";
@@ -24,7 +21,7 @@ export type CliKind = "codex" | "claude";
  * Codex's and Claude Code's own state: read-only to us, always. Enforced centrally rather
  * than at each call site, where a convenience write would look perfectly reasonable.
  */
-export function protectedRoots(): string[] {
+function protectedRoots(): string[] {
   const home = homedir();
   const roots = [
     join(home, ".claude"),
@@ -37,111 +34,21 @@ export function protectedRoots(): string[] {
   return roots.map((root) => resolve(root));
 }
 
-interface Resolved {
-  path: string;
-  /** The deepest ancestor that exists, fully resolved; null when nothing along it does. */
-  existing: string | null;
-}
-
-/**
- * Every spelling of a path folds to one form before comparison: `\\?\C:\…` and `name:stream`
- * reach the same object by another route, and NTFS reads `~/.CODEX` as `~/.codex`.
- */
-function canonical(path: string): string {
-  let p = resolve(path);
-  if (p.startsWith("\\\\?\\UNC\\")) p = "\\\\" + p.slice(8);
-  else if (p.startsWith("\\\\?\\") || p.startsWith("\\\\.\\")) p = p.slice(4);
-  if (process.platform === "win32") {
-    const colon = p.indexOf(":", 2);
-    if (colon !== -1 && !p.startsWith("\\\\")) p = p.slice(0, colon);
-    p = p.toLowerCase();
-  }
-  while (p.length > 1 && p.endsWith(sep)) p = p.slice(0, -1);
-  return p;
-}
-
-let rootCache: { key: string; roots: Resolved[] } | null = null;
-
-function roots(): Resolved[] {
-  const key = [
-    homedir(),
-    process.platform,
-    process.env["CLAUDE_CONFIG_DIR"],
-    process.env["CODEX_HOME"],
-  ].join("\u0000");
-  if (rootCache?.key !== key) rootCache = { key, roots: protectedRoots().map(realish) };
-  return rootCache.roots;
-}
-
-/**
- * `realpath` for a path that does not exist yet: resolve the deepest existing ancestor and
- * re-append the rest, so a junction or symlink into a protected directory still shows up.
- */
-function realish(path: string): Resolved {
-  const below: string[] = [];
-  let head = path;
-  for (;;) {
-    const real = tryRealpath(head);
-    if (real !== null && isDirectory(real)) {
-      return { path: below.length === 0 ? real : join(real, ...below.slice().reverse()), existing: real };
-    }
-    const parent = dirname(head);
-    if (parent === head) {
-      return { path, existing: null };
-    }
-    below.push(basename(head));
-    head = parent;
-  }
-}
-
-function tryRealpath(path: string): string | null {
-  try {
-    return realpathSync.native(path);
-  } catch {
-    return null;
-  }
-}
-
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Same object on disk, for the spellings text cannot fold: `\\localhost\C$\…` and `C:\…`
- * reach one directory while sharing almost no characters.
- */
-function sameObject(a: string, b: string): boolean {
-  try {
-    const left = statSync(a, { bigint: true });
-    const right = statSync(b, { bigint: true });
-    return left.dev === right.dev && left.ino === right.ino;
-  } catch {
-    return false;
-  }
-}
-
-function isInside(path: string, root: string): boolean {
-  let head = path;
-  for (;;) {
-    if (sameObject(head, root)) return true;
-    const parent = dirname(head);
-    if (parent === head) return false;
-    head = parent;
-  }
+/** Windows is case-insensitive at the FS level; lower-case so `~/.CODEX` and `~/.codex` match. */
+function norm(path: string): string {
+  let r = resolve(path);
+  if (process.platform === "win32") r = r.toLowerCase();
+  while (r.length > 1 && r.endsWith(sep)) r = r.slice(0, -1);
+  return r;
 }
 
 export function isProtected(path: string): boolean {
-  const target = realish(resolve(path));
-  const targetName = canonical(target.path);
-  return roots().some((root) => {
-    const rootName = canonical(root.path);
-    if (targetName === rootName || targetName.startsWith(rootName + sep)) return true;
-    return target.existing !== null && isInside(target.existing, root.path);
-  });
+  const target = norm(path);
+  for (const root of protectedRoots()) {
+    const r = norm(root);
+    if (target === r || target.startsWith(r + sep)) return true;
+  }
+  return false;
 }
 
 /** A refusal from the boundary: a decision, not a failure, so it prints as one sentence. */
