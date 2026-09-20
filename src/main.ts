@@ -1,5 +1,5 @@
 import { commandDenyCurrent, commandDoctor, commandResume, commandStatus, startWatch } from "./commands.js";
-import { Config, DEFAULT_CONFIG_PATH, MAX_SESSIONS_RETURNED } from "./config.js";
+import { Config, MAX_SESSIONS_RETURNED } from "./config.js";
 
 const USAGE = `tide — resume Codex / Claude Code sessions after a quota limit resets
 
@@ -9,12 +9,10 @@ Usage:
   tide watch                                        Watch and resume until you stop it (Ctrl-C)
   tide doctor                                        Check that this machine can run it
   tide deny-current [--cli <kind>]                  Add every currently quota-limited session to sessionDenyList
-  tide deny-current [--cli <kind>]                  Add every currently quota-limited session to sessionDenyList
 
 Options:
   --cli <kind>      Only this CLI: codex, claude
   --dry-run         Say what would happen without resuming anything
-  --config <path>   Use a specific config file
   --skip-quota-check  Skip the quota probe and resume any waiting session. Test/debug only.
   --session <id>    For watch: a session id the watcher may resume. Repeatable.
   --session-all     For watch: resume every waiting session regardless of --session list.
@@ -27,7 +25,6 @@ interface Flags {
   command: string;
   positional: string[];
   cli?: string;
-  configPath?: string;
   limit?: number;
   /** Config-mergeable. Absent means "don't override config". */
   dryRun?: boolean;
@@ -45,7 +42,7 @@ function parseArgs(argv: string[]): Flags {
     parseErrors: [],
     json: false,
   };
-  const takesValue = ["--config", "--cli", "--session", "--limit"];
+  const takesValue = ["--cli", "--session", "--limit"];
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "-h" || arg === "--help") {
@@ -58,9 +55,7 @@ function parseArgs(argv: string[]): Flags {
         flags.parseErrors.push(`${arg} needs a value`);
         continue;
       }
-      if (arg === "--config") {
-        flags.configPath = value;
-      } else if (arg === "--cli") {
+      if (arg === "--cli") {
         flags.cli = value;
       } else if (arg === "--session") {
         (flags.sessionAllowList ??= []).push(value);
@@ -97,7 +92,10 @@ function applyFlags(config: Config, flags: Flags): Config {
       overlay[key] = flagFields[key];
     }
   }
-  return new Config({ ...config, ...overlay }, config.path);
+  if (Object.keys(overlay).length > 0) {
+    config.update(overlay);
+  }
+  return config;
 }
 
 async function main(): Promise<number> {
@@ -114,7 +112,7 @@ async function main(): Promise<number> {
 
   let config: Config;
   try {
-    config = applyFlags(Config.fromFile(flags.configPath ?? DEFAULT_CONFIG_PATH), flags);
+    config = applyFlags(Config.fromFile(), flags);
   } catch (err) {
     console.error(`config error: ${(err as Error).message}`);
     return 2;

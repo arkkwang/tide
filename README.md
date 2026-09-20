@@ -37,11 +37,11 @@ node dist/tide.mjs watch --cli claude --session <id>
 
 `src/main.ts` 解析参数，`src/commands.ts` 执行命令并负责 adapter 的生命周期；`src/watch.ts` 集中处理筛选、额度检查与监控循环；`src/codex.ts`、`src/claude.ts` 分别读取会话并投递消息。构建仅输出 `dist/tide.mjs`。
 
-配置从 `--config <path>` 或默认 `.tide/config.json` 读取（默认路径相对当前工作目录，所以要跑 `tide watch` 的目录和写配置的目录得是同一个），未指定的字段使用默认值。配置文件在 `watch` 每轮 sweep 前重新读取，运行中改配置即时生效，不用重启。命令行只覆盖它自己指定的字段——`--dry-run`、`--session-all` 这些不会被文件里没有的字段重置。
+配置文件固定在 `<stateDir>/config.json`，`stateDir` 默认是 tide 安装目录下的 `.tide`，可通过 `TIDE_STATE_DIR` 环境变量覆盖。未指定的字段使用默认值。配置文件在 `watch` 每轮 sweep 前重新读取，运行中改配置即时生效，不用重启。命令行只覆盖它自己指定的字段——`--dry-run`、`--session-all` 这些不会被文件里没有的字段重置。
 
 `watch` 必须指定 `--session <id>` 或 `--session-all`，也可以在配置中设置 `sessionAllowList` / `sessionAll`。`sessionDenyList` 是按 session id 前缀排除的黑名单：命中的会话 watcher 既不 resume 也不显示，优先于 allow 列表。`tide status` 不过滤，把它们标成 `[excluded]`，方便确认规则命中得对不对。
 
-`TIDE_STATE_DIR` 设置状态目录（投递脚本与日志的落点）；`doctor` 会确保配置中的 `stateDir` 存在并可写。Claude 的额度检查仍会发送真实探测请求。
+Claude 的额度检查仍会发送真实探测请求。
 
 ```bash
 npm run typecheck

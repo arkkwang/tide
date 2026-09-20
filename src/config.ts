@@ -17,7 +17,6 @@ export interface WatcherPolicy {
 
 export const MAX_SESSIONS_RETURNED = 100;
 export const SCAN_MTIME_CUTOFF_MS = 7 * 24 * 60 * 60 * 1_000;
-export const DEFAULT_CONFIG_PATH = "./.tide/config.json";
 
 export interface ResumePolicy {
   prompt: string;
@@ -49,6 +48,15 @@ function packageRoot(): string {
     dir = parent;
   }
 }
+
+/** Directory that holds everything tide writes: the config file, delivery scripts and logs.
+ * Override with the `TIDE_STATE_DIR` env var. Not overridable from config.json — that would
+ * create a chicken-and-egg of "which stateDir does this very config file describe?". */
+const STATE_DIR = process.env["TIDE_STATE_DIR"]
+  ? resolve(process.env["TIDE_STATE_DIR"])
+  : join(packageRoot(), ".tide");
+
+const CONFIG_FILENAME = "config.json";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   if (v === null || typeof v !== "object" || Array.isArray(v)) {
@@ -84,60 +92,60 @@ function serializeForDisk(value: unknown): unknown {
   return value;
 }
 
-const STATE_DIR = process.env["TIDE_STATE_DIR"]
-  ? resolve(process.env["TIDE_STATE_DIR"])
-  : join(packageRoot(), ".tide");
-
-
 const RESUME_PROMPT = "继续刚才的任务。先检查当前状态和上次做到哪里，再继续执行。";
 
-/** Runtime config: defaults on every field, plus the file the config was loaded from. */
+/** Runtime config: disk is the source of truth. Construct via `fromFile`, mutate via
+ * `update`. Direct field assignment is forbidden at the type level (fields are `readonly`)
+ * — there's no in-memory state outside of what the file says. */
 export class Config {
-  stateDir: string = STATE_DIR;
-  dryRun: boolean = false;
-  skipQuotaCheck: boolean = false;
-  sessionAllowList: string[] = [];
-  sessionAll: boolean = false;
-  /** Session ids — or id prefixes, matched by `startsWith` — the watcher must never touch.
-   * Deny beats `sessionAllowList` and `sessionAll`. */
-  sessionDenyList: string[] = [];
-  watchPolicy: WatcherPolicy = {
+  readonly dryRun: boolean = false;
+  readonly skipQuotaCheck: boolean = false;
+  readonly sessionAllowList: string[] = [];
+  readonly sessionAll: boolean = false;
+  readonly sessionDenyList: string[] = [];
+  readonly watchPolicy: WatcherPolicy = {
     sweepIntervalMinutes: 3,
     idleMinutesBeforeResume: 5,
     skipSubagents: true,
     maxMainSessions: 50,
   };
-  resume: ResumePolicy = { prompt: RESUME_PROMPT };
-  codex: CodexConfig = {
+  readonly resume: ResumePolicy = { prompt: RESUME_PROMPT };
+  readonly codex: CodexConfig = {
     enabled: true,
     bin: "",
     deliveryTimeoutSeconds: 20,
   };
-  claude: ClaudeConfig = {
+  readonly claude: ClaudeConfig = {
     enabled: true,
     bin: "",
     probeTimeoutSeconds: 30,
     probePrompt: "Respond with the single word: pong",
   };
 
-  #path: string = DEFAULT_CONFIG_PATH;
-
-  constructor(data: Record<string, unknown> = {}, path?: string) {
-    const result = mergeConfig({ ...this }, data);
-    Object.assign(this, result);
-    if (path !== undefined) this.#path = path;
+  private constructor(data: Record<string, unknown> = {}) {
+    // stateDir is env-only; discard any value supplied via input so stale entries in
+    // existing config.json files can't shadow `TIDE_STATE_DIR`.
+    const { stateDir: _envOnly, ...rest } = data;
+    Object.assign(this, mergeConfig({ ...this }, rest));
   }
 
+  /** Directory that holds everything tide writes. Override with `TIDE_STATE_DIR`. */
+  get stateDir(): string {
+    return STATE_DIR;
+  }
+
+  /** Full path of the config file. Always `<stateDir>/config.json`. */
   get path(): string {
-    return this.#path;
+    return join(this.stateDir, CONFIG_FILENAME);
   }
 
-  /** Construct a Config from `path`. If the file is missing, write a defaults-only copy and
-   * return a Config that reflects those defaults. If it exists, parse it and merge its keys
-   * over the class defaults. Throws on read / write / parse failures. */
-  static fromFile(path: string): Config {
+  /** Construct a Config from the canonical path. If the file is missing, write a defaults-only
+   * copy and return a Config that reflects those defaults. If it exists, parse it and merge
+   * its keys over the class defaults. Throws on read / write / parse failures. */
+  static fromFile(): Config {
+    const path = join(STATE_DIR, CONFIG_FILENAME);
     if (!existsSync(path)) {
-      const fresh = new Config({}, path);
+      const fresh = new Config();
       try {
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, JSON.stringify(serializeForDisk(fresh), null, 2) + "\n", "utf8");
@@ -146,26 +154,25 @@ export class Config {
       }
       return fresh;
     }
-    return new Config(Config.#readFromDisk(path), path);
+    return new Config(Config.#readFromDisk(path));
   }
 
-  /** Re-read the file and deep-merge its keys onto this. Throws on parse errors or non-object
-   * roots; never writes. Used by the watcher to pick up edits the user made between sweeps. */
-  reload(): Config {
-    const result = mergeConfig({ ...this }, Config.#readFromDisk(this.#path));
-    Object.assign(this, result);
-    return this;
-  }
-
-  /** Write the current in-memory state to the file it was loaded from. Throws on failure. */
-  save(): void {
-    const disk = serializeForDisk(this);
+  /** Apply `patch` (deep-merged over the current state) and persist. The file is the source
+   * of truth, so after writing we re-read it: in-memory reflects whatever's actually on disk
+   * — including any concurrent writes from other processes that landed between our merge and
+   * our read. Returns `this`. */
+  update(patch: Record<string, unknown>): Config {
+    Object.assign(this, mergeConfig({ ...this }, patch));
+    const path = this.path;
     try {
-      mkdirSync(dirname(this.#path), { recursive: true });
-      writeFileSync(this.#path, JSON.stringify(disk, null, 2) + "\n", "utf8");
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(serializeForDisk(this), null, 2) + "\n", "utf8");
     } catch (err) {
-      throw new Error(`failed to write config file at ${this.#path}: ${(err as Error).message}`);
+      throw new Error(`failed to write config file at ${path}: ${(err as Error).message}`);
     }
+    // Re-read so in-memory === disk (any concurrent writes win for keys they touched).
+    Object.assign(this, mergeConfig({ ...this }, Config.#readFromDisk(path)));
+    return this;
   }
 
   static #readFromDisk(path: string): Record<string, unknown> {

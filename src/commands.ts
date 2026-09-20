@@ -1,4 +1,3 @@
-import { mkdirSync } from "node:fs";
 import { CodexAdapter, resolveCodexBin } from "./codex.js";
 import { ClaudeAdapter, resolveClaudeBin } from "./claude.js";
 import {
@@ -113,14 +112,7 @@ export async function commandStatus(
             notes: r.quota?.notes ?? [],
             sessions: r.sessions,
           })),
-          policy: {
-            source: config.path,
-            sessionDenyList: config.sessionDenyList,
-            watchPolicy: config.watchPolicy,
-            resume: config.resume,
-            codex: config.codex,
-            claude: config.claude,
-          },
+          config,
         },
         null,
         2,
@@ -303,13 +295,6 @@ export function commandDoctor(config: Config): number {
   };
 
   check("config", true, config.path);
-  check("state dir", true, config.stateDir);
-  try {
-    mkdirSync(config.stateDir, { recursive: true });
-    check("state dir writable", true, "yes");
-  } catch (err) {
-    check("state dir writable", false, (err as Error).message);
-  }
 
   const codexBin = resolveCodexBin(config.codex.bin);
   check("codex binary", !!codexBin, codexBin ?? "not found — set codex.bin or CODEX_BIN");
@@ -352,18 +337,17 @@ export async function commandDenyCurrent(
   for (const id of ids) {
     set.add(id);
   }
-  config.sessionDenyList = [...set];
-  const added = config.sessionDenyList.length - before;
+  const addedBeforeSave = set.size - before;
 
   try {
-    config.save();
+    config.update({ sessionDenyList: [...set] });
   } catch (err) {
     console.error(`config error: ${(err as Error).message}`);
     return 1;
   }
 
   console.log(
-    `added ${added} session(s) to sessionDenyList (now ${config.sessionDenyList.length} total)`,
+    `added ${addedBeforeSave} session(s) to sessionDenyList (now ${config.sessionDenyList.length} total)`,
   );
   for (const id of ids) {
     console.log(`  ${id}`);
