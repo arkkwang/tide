@@ -37,7 +37,7 @@ interface RateLimitWindow {
   resets_at?: number | null;
 }
 
-export interface RateLimitsReadResult {
+interface RateLimitsReadResult {
   ordinaryUsageAllowed?: boolean | null;
   rateLimits?: {
     planType?: string | null;
@@ -71,12 +71,7 @@ function normWindow(w: RateLimitWindow | null | undefined): WindowInfo | null {
   return { usedPercent: used, resetsAt: windowReset(w) };
 }
 
-async function askAppServer<T>(
-  bin: string,
-  method: string,
-  params: unknown,
-  onDebug: (msg: string) => void,
-): Promise<T> {
+async function askAppServer<T>(bin: string, method: string, params: unknown): Promise<T> {
   const child = spawn(bin, ["app-server"], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -118,7 +113,6 @@ async function askAppServer<T>(
       try {
         message = JSON.parse(line) as typeof message;
       } catch {
-        onDebug(`app-server: unparseable line: ${oneLine(line)}`);
         continue;
       }
       if (message.id === undefined || message.id !== waiting.id) {
@@ -233,7 +227,7 @@ function readCodexCliPathFromConfig(): string | null {
   }
 }
 
-export function quotaFromRateLimits(result: RateLimitsReadResult): QuotaInfo {
+function quotaFromRateLimits(result: RateLimitsReadResult): QuotaInfo {
     const limits = result.rateLimitsByLimitId?.["codex"] ?? result.rateLimits ?? null;
     const primary = normWindow(limits?.primary);
     const secondary = normWindow(limits?.secondary);
@@ -297,9 +291,7 @@ export class CodexAdapter implements Adapter {
 
   constructor(
     private readonly bin: string,
-    private readonly onDebug: (msg: string) => void,
     private readonly config: CodexConfig,
-    private readonly execute: typeof runChildProcess = runChildProcess,
   ) {}
 
   resolveBin(): string {
@@ -307,12 +299,7 @@ export class CodexAdapter implements Adapter {
   }
 
   async readQuota(): Promise<QuotaInfo> {
-    const result = await askAppServer<RateLimitsReadResult>(
-      this.bin,
-      "account/rateLimits/read",
-      {},
-      this.onDebug,
-    );
+    const result = await askAppServer<RateLimitsReadResult>(this.bin, "account/rateLimits/read", {});
     return quotaFromRateLimits(result);
   }
 
@@ -367,7 +354,7 @@ export class CodexAdapter implements Adapter {
       return { ok: false, delivered: false, deferred: true, via: "none", detail: "This delivery build supports Windows only" };
     }
     const timeoutMs = this.config.deliveryTimeoutSeconds * 1_000;
-    const result = await this.execute(this.bin, ["queue", "--thread", session.sessionId, "--message", prompt], {
+    const result = await runChildProcess(this.bin, ["queue", "--thread", session.sessionId, "--message", prompt], {
       cwd: pickCwd(session.cwd), timeoutMs,
     });
     if (result.spawnError) {
@@ -381,9 +368,6 @@ export class CodexAdapter implements Adapter {
       return { ok: true, delivered: true, via: "cli-queue", detail: "Message queued in Codex; this does not mean the task has finished" };
     }
     return { ok: false, delivered: false, uncertain: true, via: "cli-queue", detail: oneLine(result.err || result.out) || `queue exit ${result.code}` };
-  }
-
-  close(): void {
   }
 }
 
@@ -407,12 +391,12 @@ function describeIn(unixSeconds: number): string {
   return `${mins}m`;
 }
 
-export function sessionRoots(): string[] {
+function sessionRoots(): string[] {
   const codexHome = process.env["CODEX_HOME"] ?? join(homedir(), ".codex");
   return [join(codexHome, "sessions"), join(codexHome, "archived_sessions")];
 }
 
-export function* walkRollouts(root: string): Generator<string> {
+function* walkRollouts(root: string): Generator<string> {
   let entries: string[];
   try {
     entries = readdirSync(root);
@@ -435,7 +419,7 @@ export function* walkRollouts(root: string): Generator<string> {
   }
 }
 
-export interface ThreadState {
+interface ThreadState {
   sessionId: string;
   cwd: string;
   parentThreadId: string | null;
@@ -446,7 +430,7 @@ export interface ThreadState {
   spoken: Utterance[];
 }
 /** Reads one rollout file and reports the thread's latest turn outcome (`at` in unix ms). */
-export function parseRollout(file: string): ThreadState | null {
+function parseRollout(file: string): ThreadState | null {
   let text: string;
   try {
     text = readFileSync(file, "utf8");

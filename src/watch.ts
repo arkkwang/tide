@@ -79,8 +79,6 @@ export interface Adapter {
   findSessions(): Promise<Session[]>;
 
   resume(session: Session, prompt: string): Promise<ResumeResult>;
-
-  close?(): void;
 }
 
 /** Trim the sorted session list down to `cap` entries, reserving the first `maxMain` slots
@@ -132,9 +130,16 @@ function applyAllowList(
   return sessions;
 }
 
+/** Whether any `sessionDenyList` prefix matches this session id. Unlike the allow list there
+ * is no "ambiguous" case to report: a prefix matching several sessions just excludes them all,
+ * which is what a blacklist is for. */
+export function isDenied(session: Session, config: Config): boolean {
+  return config.sessionDenyList.some((prefix) => session.sessionId.startsWith(prefix));
+}
+
 /** The most recent utterance that is not the resume prompt we sent. `spoken` is ordered
  * newest-first by `recentUtterances`, so index 0 is the latest human prompt. */
-export function lastUserUtterance(
+function lastUserUtterance(
   spoken: Utterance[] | undefined,
   resumePrompt: string,
 ): Utterance | null {
@@ -156,6 +161,7 @@ export function printWaitingSession(session: Session, config: Config): void {
     session.model ? `[${session.model}]` : null,
     session.source ? `[${session.source}]` : null,
     session.isSubagent ? `[subagent]` : null,
+    isDenied(session, config) ? `[excluded]` : null,
   ].filter((s): s is string => s !== null);
   const tagStr = `  ${tags.join("  ")}`;
   console.info(`      ${short(session.sessionId)}  ${session.cwd}${tagStr}`);
@@ -259,11 +265,12 @@ export class Watcher {
   private async tryAdapter(adapter: Adapter): Promise<void> {
     const { config } = this.deps;
     config.load();
-    const all = capWithMainReserve(
-      await adapter.findSessions(),
-      MAX_SESSIONS_RETURNED,
-      config.watchPolicy.maxMainSessions,
-    );
+    // Deny first, before the cap: an excluded session must not hold a slot in the visible
+    // window, or a pile of blacklisted test sessions could push a waiting one out of it.
+    const detected = await adapter.findSessions();
+    const kept = detected.filter((s) => !isDenied(s, config));
+    const all = capWithMainReserve(kept, MAX_SESSIONS_RETURNED, config.watchPolicy.maxMainSessions);
+    const denied = detected.length - kept.length;
     const policy = config.watchPolicy;
 
     // Only `quota-limited` sessions are eligible for auto-resume.
@@ -299,13 +306,16 @@ export class Watcher {
     if (allowFiltered > 0) {
       notes.push(`${allowFiltered} not in --session allow list`);
     }
+    if (denied > 0) {
+      notes.push(`${denied} excluded by sessionDenyList`);
+    }
     const note = notes.length > 0 ? ` (${notes.join(", ")})` : "";
     console.info(`  ${adapter.kind}: ${allowed.length} waiting${note}`);
     for (const session of [...allowed, ...notIdle]) {
       printWaitingSession(session, config);
     }
     if (allowed.length === 0) {
-      console.info(`  ${adapter.kind}: no sessions eligible for resume${note}`);
+      console.info(`  ${adapter.kind}: no sessions eligible for resume`);
       return;
     }
     if ((await decideQuota(adapter, config)) === "blocked") {

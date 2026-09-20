@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 
 const STDOUT_TAIL_BYTES = 64 * 1024;
 
@@ -74,6 +75,49 @@ export async function runChildProcess(
       settle(null);
     }, opts.timeoutMs);
   });
+}
+
+export interface DetachResult {
+  /** Pid of the started process; null when it never started. */
+  pid: number | null;
+  spawnError: string | null;
+}
+
+export interface DetachOptions {
+  /** Child's stdout and stderr are appended here. */
+  logPath: string;
+  /** Replaces the whole environment when set. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/** Start a child that outlives this process: detached, stdio to `logPath`, never awaited.
+ * Node reports a failed `spawn` as an asynchronous `error` event, so this returns on the pid
+ * the call itself produced and swallows that event — a caller that returned already cannot act
+ * on it, and an unhandled one would raise. */
+export function spawnDetached(bin: string, args: string[], opts: DetachOptions): DetachResult {
+  let fd: number;
+  try {
+    fd = openSync(opts.logPath, "a");
+  } catch (err) {
+    return { pid: null, spawnError: (err as Error).message };
+  }
+  try {
+    const child = spawn(bin, args, {
+      ...(opts.env ? { env: opts.env } : {}),
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", fd, fd],
+    });
+    child.on("error", () => {});
+    child.unref();
+    return child.pid === undefined
+      ? { pid: null, spawnError: `${bin} did not start` }
+      : { pid: child.pid, spawnError: null };
+  } catch (err) {
+    return { pid: null, spawnError: (err as Error).message };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Flatten an OpenAI/Claude-style `content` payload to a string; non-text parts contribute nothing. */

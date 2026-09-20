@@ -12,7 +12,7 @@ import {
 import { type Config, MAX_SESSIONS_RETURNED } from "./config.js";
 import { formatDuration } from "./util.js";
 
-export function buildAdapters(
+function buildAdapters(
   config: Config,
   cli?: string,
 ): { adapters: Adapter[]; problems: string[] } {
@@ -26,7 +26,7 @@ export function buildAdapters(
   if ((cli === undefined || cli === "codex") && config.codex.enabled) {
     const bin = resolveCodexBin(config.codex.bin);
     if (bin) {
-      adapters.push(new CodexAdapter(bin, () => {}, config.codex));
+      adapters.push(new CodexAdapter(bin, config.codex));
     } else {
       problems.push("codex: could not locate the CLI (set codex.bin or CODEX_BIN)");
     }
@@ -73,31 +73,27 @@ export async function commandStatus(
 
   const cap = limit ?? MAX_SESSIONS_RETURNED;
   const reports: StatusReport[] = [];
-  try {
-    for (const adapter of adapters) {
-      const all = await adapter.findSessions();
-      const report: StatusReport = {
-        cli: adapter.kind,
-        binary: adapter.resolveBin(),
-        usable: null,
-        unreadable: null,
-        quota: null,
-        sessions: capWithMainReserve(all, cap, config.watchPolicy.maxMainSessions),
-      };
-      if (config.skipQuotaCheck) {
-        report.unreadable = "skipped by --skip-quota-check";
-      } else {
-        try {
-          report.quota = await adapter.readQuota();
-          report.usable = report.quota.allowed;
-        } catch (err) {
-          report.unreadable = (err as Error).message;
-        }
+  for (const adapter of adapters) {
+    const all = await adapter.findSessions();
+    const report: StatusReport = {
+      cli: adapter.kind,
+      binary: adapter.resolveBin(),
+      usable: null,
+      unreadable: null,
+      quota: null,
+      sessions: capWithMainReserve(all, cap, config.watchPolicy.maxMainSessions),
+    };
+    if (config.skipQuotaCheck) {
+      report.unreadable = "skipped by --skip-quota-check";
+    } else {
+      try {
+        report.quota = await adapter.readQuota();
+        report.usable = report.quota.allowed;
+      } catch (err) {
+        report.unreadable = (err as Error).message;
       }
-      reports.push(report);
     }
-  } finally {
-    for (const adapter of adapters) adapter.close?.();
+    reports.push(report);
   }
 
   if (json) {
@@ -119,6 +115,7 @@ export async function commandStatus(
           })),
           policy: {
             source: config.path,
+            sessionDenyList: config.sessionDenyList,
             watchPolicy: config.watchPolicy,
             resume: config.resume,
             codex: config.codex,
@@ -189,12 +186,15 @@ export async function commandStatus(
     `  codex:        ${config.codex.enabled ? "enabled" : "disabled"}`,
   );
   console.log(
-    `  claude:       ${config.claude.enabled ? "enabled" : "disabled"} (probe timeout ${config.claude.probeTimeoutSeconds}s, delivery timeout ${config.claude.deliveryTimeoutSeconds}s)`,
+    `  claude:       ${config.claude.enabled ? "enabled" : "disabled"} (probe timeout ${config.claude.probeTimeoutSeconds}s)`,
   );
   console.log(
     `  watchPolicy:  idle ≥ ${config.watchPolicy.idleMinutesBeforeResume}m` +
       (config.watchPolicy.skipSubagents ? ", skip subagents" : ", include subagents"),
   );
+  if (config.sessionDenyList.length > 0) {
+    console.log(`  excluded:     ${config.sessionDenyList.join(", ")}`);
+  }
   return 0;
 }
 
@@ -240,62 +240,58 @@ export async function commandResume(
     return 2;
   }
 
-  try {
-    const matches = await locateSessions(adapters, id);
-    if (matches.length === 0) {
-      return refuse(
-        `no session matching "${id}" — tide status shows the current list.`,
-        1,
-      );
-    }
-    if (matches.length > 1) {
-      const candidates = matches.map((m) => `${m.adapter.kind}/${m.session.sessionId}`).join(", ");
-      return refuse(`"${id}" matches ${matches.length} sessions — use more of the id: ${candidates}`, 2);
-    }
-
-    const { adapter, session } = matches[0]!;
-    const text = config.resume.prompt;
-
-    if (!json) {
-      console.log(`=== resume ${adapter.kind} ===`);
-      console.log(`  session:  ${session.sessionId}`);
-      console.log(`  cwd:      ${session.cwd}`);
-      for (const said of session.spoken ?? []) {
-        console.log(`  said:     ${JSON.stringify(said.text)}`);
-      }
-      console.log(`  prompt:   ${text}`);
-    }
-
-    const result = config.dryRun
-      ? { ok: true, delivered: false, via: "dry-run", detail: `would resume in ${session.cwd}` }
-      : await adapter.resume(session, text);
-    if (json) {
-      console.log(
-        JSON.stringify(
-          {
-            ok: result.ok,
-            delivered: result.delivered,
-            uncertain: result.uncertain ?? false,
-            deferred: result.deferred ?? false,
-            via: result.via,
-            detail: result.detail,
-            cli: adapter.kind,
-            sessionId: session.sessionId,
-            cwd: session.cwd,
-            prompt: text,
-          },
-          null,
-          2,
-        ),
-      );
-    } else {
-      console.log(`\n  ${result.ok ? "ok  " : "FAIL"}  via ${result.via} — ${result.detail}`);
-    }
-
-    return result.ok ? 0 : 1;
-  } finally {
-    for (const adapter of adapters) adapter.close?.();
+  const matches = await locateSessions(adapters, id);
+  if (matches.length === 0) {
+    return refuse(
+      `no session matching "${id}" — tide status shows the current list.`,
+      1,
+    );
   }
+  if (matches.length > 1) {
+    const candidates = matches.map((m) => `${m.adapter.kind}/${m.session.sessionId}`).join(", ");
+    return refuse(`"${id}" matches ${matches.length} sessions — use more of the id: ${candidates}`, 2);
+  }
+
+  const { adapter, session } = matches[0]!;
+  const text = config.resume.prompt;
+
+  if (!json) {
+    console.log(`=== resume ${adapter.kind} ===`);
+    console.log(`  session:  ${session.sessionId}`);
+    console.log(`  cwd:      ${session.cwd}`);
+    for (const said of session.spoken ?? []) {
+      console.log(`  said:     ${JSON.stringify(said.text)}`);
+    }
+    console.log(`  prompt:   ${text}`);
+  }
+
+  const result = config.dryRun
+    ? { ok: true, delivered: false, via: "dry-run", detail: `would resume in ${session.cwd}` }
+    : await adapter.resume(session, text);
+  if (json) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: result.ok,
+          delivered: result.delivered,
+          uncertain: result.uncertain ?? false,
+          deferred: result.deferred ?? false,
+          via: result.via,
+          detail: result.detail,
+          cli: adapter.kind,
+          sessionId: session.sessionId,
+          cwd: session.cwd,
+          prompt: text,
+        },
+        null,
+        2,
+      ),
+    );
+  } else {
+    console.log(`\n  ${result.ok ? "ok  " : "FAIL"}  via ${result.via} — ${result.detail}`);
+  }
+
+  return result.ok ? 0 : 1;
 }
 
 export function commandDoctor(config: Config): number {
@@ -349,6 +345,5 @@ export async function startWatch(
   } finally {
     process.off("SIGINT", shutdown);
     process.off("SIGTERM", shutdown);
-    for (const adapter of adapters) adapter.close?.();
   }
 }

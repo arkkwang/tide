@@ -31,10 +31,8 @@ export interface CodexConfig {
 export interface ClaudeConfig {
   enabled: boolean;
   bin: string;
-  deliveryTimeoutSeconds: number;
   probeTimeoutSeconds: number;
   probePrompt: string;
-  resumedSessions: Set<string>;
 }
 
 function packageRoot(): string {
@@ -57,19 +55,6 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   }
   const proto = Object.getPrototypeOf(v);
   return proto === Object.prototype || proto === null;
-}
-
-function cleanIds(raw: unknown): Set<string> {
-  if (raw == null || typeof (raw as Iterable<unknown>)[Symbol.iterator] !== "function") {
-    return new Set<string>();
-  }
-  const out = new Set<string>();
-  for (const item of raw as Iterable<unknown>) {
-    if (typeof item === "string" && item.length > 0) {
-      out.add(item);
-    }
-  }
-  return out;
 }
 
 /** Deep-merge `patch` over `current`. Non-object values (including missing) replace `current`. */
@@ -111,6 +96,9 @@ export class Config {
   skipQuotaCheck: boolean = false;
   sessionAllowList: string[] = [];
   sessionAll: boolean = false;
+  /** Session ids — or id prefixes, matched by `startsWith` — the watcher must never touch.
+   * Deny beats `sessionAllowList` and `sessionAll`. */
+  sessionDenyList: string[] = [];
   watchPolicy: WatcherPolicy = {
     sweepIntervalMinutes: 3,
     idleMinutesBeforeResume: 5,
@@ -126,10 +114,8 @@ export class Config {
   claude: ClaudeConfig = {
     enabled: true,
     bin: "",
-    deliveryTimeoutSeconds: 20,
     probeTimeoutSeconds: 30,
     probePrompt: "Respond with the single word: pong",
-    resumedSessions: new Set<string>(),
   };
 
   #path: string = "./.tide/config.json";
@@ -141,7 +127,6 @@ export class Config {
         fields[key] = mergeConfig(fields[key], (data as Record<string, unknown>)[key]);
       }
     }
-    this.claude.resumedSessions = cleanIds(this.claude.resumedSessions);
     if (path !== undefined) this.#path = path;
   }
 
@@ -178,7 +163,10 @@ export class Config {
     }
   }
 
-  /** Re-read the file into in-memory state. */
+  /** Re-read the file into in-memory state. Only keys the file actually mentions are adopted —
+   * adopting the whole parsed object would reset every other field to its default and wipe the
+   * flags merged in at startup, so `--session-all` would quietly stop matching on the first
+   * sweep of a watch that has a config file on disk. */
   load(): Config {
     if (!existsSync(this.#path)) {
       return this;
@@ -193,7 +181,13 @@ export class Config {
       throw new Error(`config at ${this.#path} must be a JSON object`);
     }
 
-    Object.assign(this, new Config(parsed, this.#path));
+    const fresh = new Config(parsed, this.#path) as unknown as Record<string, unknown>;
+    const fields = this as unknown as Record<string, unknown>;
+    for (const key of Object.keys(parsed)) {
+      if (key in fields) {
+        fields[key] = fresh[key];
+      }
+    }
     return this;
   }
 }

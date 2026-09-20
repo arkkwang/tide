@@ -1,12 +1,23 @@
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, openSync, readdirSync, readSync, readFileSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   SCAN_MTIME_CUTOFF_MS,
   type Config,
 } from "./config.js";
-import { messageText, oneLine, runChildProcess } from "./util.js";
+import { messageText, oneLine, runChildProcess, short } from "./util.js";
+import { launchWindow, posixQuote } from "./window.js";
 import {
   SPOKEN_CHARS,
   SPOKEN_COUNT,
@@ -53,8 +64,34 @@ export function resolveClaudeBin(explicit?: string): string | null {
   return null;
 }
 
+/** Claude Code marks the processes it starts so that they know they are nested. A TUI that
+ * inherits the marker reports "transcript saving is off" and persists nothing; the session id
+ * and the messaging socket name the session tide itself runs under. */
+const PARENT_SESSION_MARKERS = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+  "CLAUDE_PID",
+];
+
+/** What a delivered session runs under: tide's own environment (credentials, model, the Git
+ * Bash path), minus the markers of whichever session started tide. */
+function deliveryEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of PARENT_SESSION_MARKERS) {
+    delete env[name];
+  }
+  return env;
+}
+
 /** The `error` value Claude Code writes on a rate-limited API-error record. */
-export const QUOTA_ERROR_TAG = "rate_limit";
+const QUOTA_ERROR_TAG = "rate_limit";
+
+/** `agents --json` lists local processes; anything slower than this is not going to answer. */
+const AGENTS_LIST_TIMEOUT_MS = 5_000;
 
 interface ClaudeProbeResult {
   is_error?: boolean;
@@ -75,7 +112,6 @@ export class ClaudeAdapter implements Adapter {
   constructor(
     private readonly bin: string,
     private readonly config: Config,
-    private readonly execute: typeof runChildProcess = runChildProcess,
   ) {}
 
   resolveBin(): string {
@@ -83,11 +119,8 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async readQuota(): Promise<QuotaInfo> {
-    if (process.platform !== "win32") {
-      throw new Error("Claude quota probe supports Windows only");
-    }
     // probe runs without hooks/plugins, leaves no transcript, fails fast on 429
-    const result = await this.execute(
+    const result = await runChildProcess(
       this.bin,
       ["-p", this.config.claude.probePrompt, "--bare", "--no-session-persistence", "--output-format", "json"],
       {
@@ -144,7 +177,6 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async findSessions(): Promise<Session[]> {
-    const resumed = this.config.claude.resumedSessions;
     const projectsDir = join(claudeConfigDir(), "projects");
     if (!existsSync(projectsDir)) {
       return [];
@@ -161,7 +193,7 @@ export class ClaudeAdapter implements Adapter {
       for (const entry of safeReaddir(projectDir)) {
         const entryPath = join(projectDir, entry);
         if (entry.endsWith(".jsonl")) {
-          collectMainSession(found, null, entry, entryPath, cutoff, resumed);
+          collectMainSession(found, null, entry, entryPath, cutoff);
           continue;
         }
         // `<parentSessionId>/subagents/agent-<agentId>.jsonl` lives one level deeper; the
@@ -177,7 +209,7 @@ export class ClaudeAdapter implements Adapter {
           if (!sub.startsWith("agent-") || !sub.endsWith(".jsonl")) {
             continue;
           }
-          collectMainSession(found, entry, sub, join(subagentsDir, sub), cutoff, resumed);
+          collectMainSession(found, entry, sub, join(subagentsDir, sub), cutoff);
         }
       }
     }
@@ -186,62 +218,95 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async resume(session: Session, prompt: string): Promise<ResumeResult> {
-    if (process.platform !== "win32") {
-      return { ok: false, delivered: false, deferred: true, via: "none", detail: "This delivery build supports Windows only" };
+    if (!session.cwd || !existsSync(session.cwd)) {
+      return { ok: false, delivered: false, via: "cli-resume", detail: `session cwd is not on disk: ${session.cwd || "(unset)"}` };
     }
+    // Resuming a session id that a live claude process holds does not fork: it interrupts that
+    // process's in-flight turn and takes the session over, leaving the holder alive but out of
+    // sync with the transcript. The holder is terminated first.
+    const killed = await this.killHolders(session.sessionId);
 
-    const timeoutMs = this.config.claude.deliveryTimeoutSeconds * 1_000;
-    // `--bg --resume` returns `backgrounded` on success and forks if the TUI is still open.
-    // `--dangerously-skip-permissions` is needed because a background session otherwise runs
-    // in `manual` mode where every tool call would wait on a headless-unreachable approval.
-    // 当session还在前台时， 即使resume, 由于session被占用,还是会降级走到--fork-session 产生一个新的sesion
-    // 只有session不在前台时, 才会直接resume到原来的session, 并且不会产生新的sessionId, 但是后续又有逻辑说处理过的sessionId不再会被二次处理, 因此, 这里直接显式传递--fork-session, 让每次resume都产生一个新的sessionId
-    // 经测试, claude 命令暴露能够直接关闭yiyousession的命令, claude stop <id> 和 claude deamon stop <id> 都只负责管理后台session,即子Agent的session
-    const result = await this.execute(
-      this.bin,
+    const deliveriesDir = join(this.config.stateDir, "deliveries");
+    mkdirSync(deliveriesDir, { recursive: true });
+    // Only the script path ever reaches a command line. The cwd and the prompt are read by the
+    // window's shell, so POSIX quoting covers them on either platform.
+    const scriptPath = join(deliveriesDir, `${session.sessionId}.sh`);
+    writeFileSync(
+      scriptPath,
       [
-        "--bg", 
-        "--resume", session.sessionId, 
-        "--fork-session",
-        "--dangerously-skip-permissions", 
-        prompt
-      ],
-      { cwd: pickCwd(session.cwd), timeoutMs },
+        "#!/bin/bash",
+        `cd ${posixQuote(session.cwd)} || exit 1`,
+        // Unattended, the session otherwise waits on approvals nothing can answer.
+        `${posixQuote(this.bin)} --resume ${session.sessionId} --dangerously-skip-permissions ${posixQuote(prompt)}`,
+        "",
+      ].join("\n"),
+      "utf8",
     );
-    if (result.spawnError) return { ok: false, delivered: false, via: "cli-resume", detail: result.spawnError };
-    if (result.timedOut) {
-      return {
-        ok: false,
-        delivered: false,
-        uncertain: true,
-        via: "cli-resume",
-        detail: "Queue acknowledgement timed out; inspect Claude Code before retrying. The Claude Code session was not stopped.",
-      };
-    }
-    if (result.code === 0 ) {
-      this.config.claude.resumedSessions.add(session.sessionId);
-      this.config.flush({ claude: { resumedSessions: this.config.claude.resumedSessions } });
+    chmodSync(scriptPath, 0o700);
 
-      return {
-        ok: true,
-        delivered: true,
-        via: "cli-resume",
-        detail: "Message queued in Claude Code; this does not mean the task has finished",
-      };
+    const launched = launchWindow({
+      scriptPath,
+      title: `tide ${short(session.sessionId)}`,
+      logPath: join(deliveriesDir, `${session.sessionId}.log`),
+      env: deliveryEnv(),
+    });
+    if (!launched.ok) {
+      return { ok: false, delivered: false, via: "cli-resume", detail: launched.detail };
     }
+    const cleared = killed.length > 0 ? `; terminated ${killed.map((pid) => `pid ${pid}`).join(", ")}` : "";
     return {
-      ok: false,
-      delivered: false,
-      uncertain: true,
+      ok: true,
+      delivered: true,
       via: "cli-resume",
-      detail: oneLine(result.err || result.out) || `resume exit ${result.code}`,
+      detail: `window requested via ${launched.detail}${cleared}`,
     };
   }
 
+  /** Terminate every live process holding `sessionId`, and return their pids. Reads only
+   * `sessionId` and `pid` from `agents --json`; `pid` is present on interactive entries only,
+   * so a background job holding the same id is left alone. An empty result means nothing held
+   * it or the listing failed — delivery proceeds either way. */
+  private async killHolders(sessionId: string): Promise<number[]> {
+    const result = await runChildProcess(this.bin, ["agents", "--json"], {
+      timeoutMs: AGENTS_LIST_TIMEOUT_MS,
+    });
+    if (result.spawnError || result.timedOut || result.code !== 0) {
+      return [];
+    }
+    let entries: unknown;
+    try {
+      entries = JSON.parse(result.out);
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(entries)) {
+      return [];
+    }
+    const killed: number[] = [];
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      const row = entry as Record<string, unknown>;
+      if (row["sessionId"] !== sessionId) continue;
+      const pid = row["pid"];
+      if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) continue;
+      if (terminate(pid)) {
+        killed.push(pid);
+      }
+    }
+    return killed;
+  }
 }
 
-function pickCwd(cwd: string): string {
-  return cwd && existsSync(cwd) ? cwd : process.cwd();
+/** `process.kill` is TerminateProcess on Windows and SIGTERM elsewhere. A pid that is already
+ * gone throws instead of reporting anything the caller can use, so failure reads as "not
+ * terminated". */
+function terminate(pid: number): boolean {
+  try {
+    process.kill(pid);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** True when this file lives under a `<sessionId>/subagents/` directory, i.e. it is a forked
@@ -258,12 +323,8 @@ function collectMainSession(
   entry: string,
   file: string,
   cutoff: number,
-  resumedSessions: Set<string>,
 ): void {
   const sessionId = entry.replace(/\.jsonl$/, "");
-  if (resumedSessions.has(sessionId)) {
-    return;
-  }
   let mtimeMs: number;
   try {
     mtimeMs = statSync(file).mtimeMs;
@@ -323,12 +384,11 @@ interface TailState {
   spoken: Utterance[];
 }
 
-export function inspectTranscriptTail(
-  file: string,
-  options: { maxBytes?: number } = {},
-): TailState | null {
-  const maxBytes = options.maxBytes ?? 2_000_000;
-  const lines = readTailLines(file, maxBytes);
+/** Bytes of transcript tail that decide what the session was doing. */
+const TAIL_MAX_BYTES = 2_000_000;
+
+function inspectTranscriptTail(file: string): TailState | null {
+  const lines = readTailLines(file, TAIL_MAX_BYTES);
   const model = newestModel(lines);
   const spoken = recentUtterances(lines);
   let cwd = "";
