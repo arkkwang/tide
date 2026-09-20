@@ -15,10 +15,7 @@ export interface WatcherPolicy {
   maxMainSessions: number;
 }
 
-/** Default cap on the session list that status and watch trim the adapter's result to. */
 export const MAX_SESSIONS_RETURNED = 100;
-
-/** Skip rollout / transcript files whose mtime is older than this. */
 export const SCAN_MTIME_CUTOFF_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export interface ResumePolicy {
@@ -37,7 +34,6 @@ export interface ClaudeConfig {
   deliveryTimeoutSeconds: number;
   probeTimeoutSeconds: number;
   probePrompt: string;
-  /** Session ids that `claude --bg --resume` has already nudged. */
   resumedSessions: Set<string>;
 }
 
@@ -56,7 +52,11 @@ function packageRoot(): string {
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
+  if (v === null || typeof v !== "object" || Array.isArray(v)) {
+    return false;
+  }
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
 }
 
 function cleanIds(raw: unknown): Set<string> {
@@ -72,10 +72,30 @@ function cleanIds(raw: unknown): Set<string> {
   return out;
 }
 
-function mergeValue(current: unknown, value: unknown): unknown {
-  return isPlainObject(value) && isPlainObject(current)
-    ? { ...current, ...value }
-    : value;
+/** Deep-merge `patch` over `current`. Non-object values (including missing) replace `current`. */
+function mergeConfig(current: unknown, patch: unknown): unknown {
+  if (!isPlainObject(current) || !isPlainObject(patch)) {
+    return patch;
+  }
+  const out: Record<string, unknown> = { ...current };
+  for (const key of Object.keys(patch)) {
+    out[key] = mergeConfig(out[key], patch[key]);
+  }
+  return out;
+}
+
+/** JSON form of a runtime value: Sets become arrays, other objects recurse over own keys. */
+function serializeForDisk(value: unknown): unknown {
+  if (value instanceof Set) return [...value].map(serializeForDisk);
+  if (Array.isArray(value)) return value.map(serializeForDisk);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+      out[key] = serializeForDisk((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
 }
 
 const STATE_DIR = process.env["TIDE_STATE_DIR"]
@@ -118,54 +138,62 @@ export class Config {
     const fields = this as unknown as Record<string, unknown>;
     for (const key of Object.keys(data)) {
       if (key in fields) {
-        fields[key] = mergeValue(fields[key], (data as Record<string, unknown>)[key]);
+        fields[key] = mergeConfig(fields[key], (data as Record<string, unknown>)[key]);
       }
     }
     this.claude.resumedSessions = cleanIds(this.claude.resumedSessions);
     if (path !== undefined) this.#path = path;
   }
 
-  toJSON(): object {
-    const data = {
-      ...this,
-      claude: {
-        ...this.claude,
-        resumedSessions: [...this.claude.resumedSessions],
-      },
-    };
-    return data;
-  }
-
   get path(): string {
     return this.#path;
   }
 
-  /** Persist current in-memory state to the file load() read from. */
-  flush(): void {
+  /** Persist `patch` onto the file it was loaded from. The file is re-read first and only the
+   * patch is merged in, so concurrent edits to other fields survive. A missing file is
+   * bootstrapped from the full in-memory state. */
+  flush(patch: object): void {
+    const filePath = this.#path;
+    let disk: Record<string, unknown>;
+    if (existsSync(filePath)) {
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(filePath, "utf8"));
+        if (!isPlainObject(parsed)) {
+          console.error(`config at ${filePath} is not a JSON object; skipping flush`);
+          return;
+        }
+        disk = mergeConfig(parsed, serializeForDisk(patch)) as Record<string, unknown>;
+      } catch (err) {
+        console.error(`Failed to read config file from ${filePath}: ${(err as Error).message}`);
+        return;
+      }
+    } else {
+      disk = serializeForDisk(this) as Record<string, unknown>;
+    }
     try {
-      mkdirSync(dirname(this.#path), { recursive: true });
-      writeFileSync(this.#path, JSON.stringify(this, null, 2) + "\n", "utf8");
+      mkdirSync(dirname(filePath), { recursive: true });
+      writeFileSync(filePath, JSON.stringify(disk, null, 2) + "\n", "utf8");
     } catch (err) {
-      console.error(`Failed to write config file to ${this.#path}: ${(err as Error).message}`);
+      console.error(`Failed to write config file to ${filePath}: ${(err as Error).message}`);
     }
   }
 
+  /** Re-read the file into in-memory state. */
   load(): Config {
     if (!existsSync(this.#path)) {
       return this;
     }
-
     let parsed: unknown;
     try {
       parsed = JSON.parse(readFileSync(this.#path, "utf8"));
     } catch (err) {
       throw new Error(`config at ${this.#path} is not valid JSON: ${(err as Error).message}`);
     }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (!isPlainObject(parsed)) {
       throw new Error(`config at ${this.#path} must be a JSON object`);
     }
 
-    Object.assign(this, new Config(parsed as object, this.#path));
+    Object.assign(this, new Config(parsed, this.#path));
     return this;
   }
 }

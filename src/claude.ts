@@ -220,7 +220,7 @@ export class ClaudeAdapter implements Adapter {
     }
     if (result.code === 0 ) {
       this.config.claude.resumedSessions.add(session.sessionId);
-      this.config.flush();
+      this.config.flush({ claude: { resumedSessions: this.config.claude.resumedSessions } });
 
       return {
         ok: true,
