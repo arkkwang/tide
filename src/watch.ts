@@ -264,7 +264,7 @@ export class Watcher {
 
   private async tryAdapter(adapter: Adapter): Promise<void> {
     const { config } = this.deps;
-    config.load();
+    config.reload();
     // Deny first, before the cap: an excluded session must not hold a slot in the visible
     // window, or a pile of blacklisted test sessions could push a waiting one out of it.
     const detected = await adapter.findSessions();

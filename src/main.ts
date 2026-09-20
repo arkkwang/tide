@@ -1,5 +1,5 @@
-import { commandDoctor, commandResume, commandStatus, startWatch } from "./commands.js";
-import { Config, MAX_SESSIONS_RETURNED } from "./config.js";
+import { commandDenyCurrent, commandDoctor, commandResume, commandStatus, startWatch } from "./commands.js";
+import { Config, DEFAULT_CONFIG_PATH, MAX_SESSIONS_RETURNED } from "./config.js";
 
 const USAGE = `tide — resume Codex / Claude Code sessions after a quota limit resets
 
@@ -8,6 +8,8 @@ Usage:
   tide resume <session-id> [--cli <kind>] [--json]   Send one turn to one session, right now
   tide watch                                        Watch and resume until you stop it (Ctrl-C)
   tide doctor                                        Check that this machine can run it
+  tide deny-current [--cli <kind>]                  Add every currently quota-limited session to sessionDenyList
+  tide deny-current [--cli <kind>]                  Add every currently quota-limited session to sessionDenyList
 
 Options:
   --cli <kind>      Only this CLI: codex, claude
@@ -88,7 +90,14 @@ function parseArgs(argv: string[]): Flags {
 }
 
 function applyFlags(config: Config, flags: Flags): Config {
-  return new Config({ ...config, ...flags }, config.path);
+  const flagFields = flags as unknown as Record<string, unknown>;
+  const overlay: Record<string, unknown> = {};
+  for (const key of Object.keys(config)) {
+    if (key in flagFields && flagFields[key] !== undefined) {
+      overlay[key] = flagFields[key];
+    }
+  }
+  return new Config({ ...config, ...overlay }, config.path);
 }
 
 async function main(): Promise<number> {
@@ -105,7 +114,7 @@ async function main(): Promise<number> {
 
   let config: Config;
   try {
-    config = applyFlags(new Config({}, flags.configPath).load(), flags);
+    config = applyFlags(Config.fromFile(flags.configPath ?? DEFAULT_CONFIG_PATH), flags);
   } catch (err) {
     console.error(`config error: ${(err as Error).message}`);
     return 2;
@@ -125,6 +134,8 @@ async function main(): Promise<number> {
         return 2;
       }
       return await startWatch(config, flags.cli);
+    case "deny-current":
+      return await commandDenyCurrent(config, flags.cli);
     default:
       console.error(`unknown command: ${flags.command}`);
       console.error(USAGE);

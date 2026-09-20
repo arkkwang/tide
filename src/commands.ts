@@ -321,6 +321,56 @@ export function commandDoctor(config: Config): number {
   return failures === 0 ? 0 : 1;
 }
 
+export async function commandDenyCurrent(
+  config: Config,
+  cli: string | undefined,
+): Promise<number> {
+  const { adapters, problems } = buildAdapters(config, cli);
+  for (const problem of problems) {
+    console.error(`  ! ${problem}`);
+  }
+  if (adapters.length === 0) {
+    console.error("no usable adapters — nothing to deny");
+    return 1;
+  }
+
+  const ids: string[] = [];
+  for (const adapter of adapters) {
+    const sessions = await adapter.findSessions();
+    for (const s of sessions) {
+      if (s.status === "quota-limited") ids.push(s.sessionId);
+    }
+  }
+
+  if (ids.length === 0) {
+    console.log("no quota-limited sessions found");
+    return 0;
+  }
+
+  const before = config.sessionDenyList.length;
+  const set = new Set(config.sessionDenyList);
+  for (const id of ids) {
+    set.add(id);
+  }
+  config.sessionDenyList = [...set];
+  const added = config.sessionDenyList.length - before;
+
+  try {
+    config.save();
+  } catch (err) {
+    console.error(`config error: ${(err as Error).message}`);
+    return 1;
+  }
+
+  console.log(
+    `added ${added} session(s) to sessionDenyList (now ${config.sessionDenyList.length} total)`,
+  );
+  for (const id of ids) {
+    console.log(`  ${id}`);
+  }
+  return 0;
+}
+
 export async function startWatch(
   config: Config,
   cli: string | undefined,
