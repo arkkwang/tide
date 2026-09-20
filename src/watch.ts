@@ -69,7 +69,7 @@ export interface Adapter {
 
   resolveBin(): string | null;
 
-  /** Read the account's current quota state. Must not consume quota. */
+  /** Read quota state. Claude uses a real probe request that consumes quota. */
   readQuota(): Promise<QuotaInfo>;
 
   /** All sessions the adapter can see, newest first. Each carries a `status` describing what the
@@ -231,7 +231,6 @@ export class Watcher {
 
   async run(): Promise<void> {
     const { config } = this.deps;
-    const intervalMs = config.watchPolicy.sweepIntervalMinutes * 60_000;
     console.info(
       `watcher started (dry-run=${config.dryRun}, sweep every ${config.watchPolicy.sweepIntervalMinutes}m)`,
     );
@@ -240,14 +239,9 @@ export class Watcher {
       if (this.stopping) {
         break;
       }
-      await this.sleep(intervalMs);
+      await this.sleep(this.deps.config.watchPolicy.sweepIntervalMinutes * 60_000);
     }
     console.info("watcher stopped");
-  }
-
-  async runOnce(): Promise<void> {
-    console.info(`single pass (dry-run=${this.deps.config.dryRun})`);
-    await this.sweep();
   }
 
   private async sweep(): Promise<void> {
@@ -264,6 +258,7 @@ export class Watcher {
 
   private async tryAdapter(adapter: Adapter): Promise<void> {
     const { config } = this.deps;
+    config.load();
     const all = capWithMainReserve(
       await adapter.findSessions(),
       MAX_SESSIONS_RETURNED,
@@ -271,14 +266,10 @@ export class Watcher {
     );
     const policy = config.watchPolicy;
 
-    // Only sessions stopped by a quota error are eligible for resume. `aborted` almost always
-    // means the user stopped the session themselves — resuming it would override that decision.
-    // `errored` would likely fail again on the next attempt. The user can still resume those
-    // manually with `tide resume <id>`.
+    // Only `quota-limited` sessions are eligible for auto-resume.
     const resumable = all.filter((s) => s.status === "quota-limited");
     const nonResumable = all.length - resumable.length;
 
-    // skipSubagents is a metadata filter on `isSubagent`, orthogonal to `status`.
     const afterSubagent = policy.skipSubagents
       ? resumable.filter((s) => !s.isSubagent)
       : [...resumable];

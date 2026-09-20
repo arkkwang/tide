@@ -1,11 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   SCAN_MTIME_CUTOFF_MS,
-  type ClaudeConfig,
-  defaultStateDir,
+  type Config,
 } from "./config.js";
 import { messageText, oneLine, runChildProcess } from "./util.js";
 import {
@@ -22,8 +21,6 @@ import {
 function claudeConfigDir(): string {
   return process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude");
 }
-
-const RESUMED_FILENAME = "claude-resumed.json";
 
 export function resolveClaudeBin(explicit?: string): string | null {
   const candidates: string[] = [];
@@ -75,15 +72,11 @@ function probeIsRateLimited(probe: ClaudeProbeResult): boolean {
 export class ClaudeAdapter implements Adapter {
   readonly kind = "claude" as const;
 
-  private readonly resumedSessions: Set<string>;
-
   constructor(
     private readonly bin: string,
-    private readonly config: ClaudeConfig,
+    private readonly config: Config,
     private readonly execute: typeof runChildProcess = runChildProcess,
-  ) {
-    this.resumedSessions = loadResumedFromDisk();
-  }
+  ) {}
 
   resolveBin(): string {
     return this.bin;
@@ -93,15 +86,13 @@ export class ClaudeAdapter implements Adapter {
     if (process.platform !== "win32") {
       throw new Error("Claude quota probe supports Windows only");
     }
-    // `--bare` skips hooks / CLAUDE.md / plugins; `--no-session-persistence` keeps the throwaway
-    // probe out of the transcript tree; retries off so a 429 fails in ~2s instead of retrying
-    // with backoff past the probe timeout.
+    // probe runs without hooks/plugins, leaves no transcript, fails fast on 429
     const result = await this.execute(
       this.bin,
-      ["-p", this.config.probePrompt, "--bare", "--no-session-persistence", "--output-format", "json"],
+      ["-p", this.config.claude.probePrompt, "--bare", "--no-session-persistence", "--output-format", "json"],
       {
         cwd: process.cwd(),
-        timeoutMs: this.config.probeTimeoutSeconds * 1_000,
+        timeoutMs: this.config.claude.probeTimeoutSeconds * 1_000,
         env: { ...process.env, CLAUDE_CODE_MAX_RETRIES: "0" },
       },
     );
@@ -109,7 +100,7 @@ export class ClaudeAdapter implements Adapter {
       throw new Error(`probe could not be started: ${result.spawnError}`);
     }
     if (result.timedOut) {
-      throw new Error(`probe timed out after ${this.config.probeTimeoutSeconds}s`);
+      throw new Error(`probe timed out after ${this.config.claude.probeTimeoutSeconds}s`);
     }
 
     let parsed: ClaudeProbeResult;
@@ -153,6 +144,7 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async findSessions(): Promise<Session[]> {
+    const resumed = this.config.claude.resumedSessions;
     const projectsDir = join(claudeConfigDir(), "projects");
     if (!existsSync(projectsDir)) {
       return [];
@@ -169,7 +161,7 @@ export class ClaudeAdapter implements Adapter {
       for (const entry of safeReaddir(projectDir)) {
         const entryPath = join(projectDir, entry);
         if (entry.endsWith(".jsonl")) {
-          collectMainSession(found, null, entry, entryPath, cutoff, this.resumedSessions);
+          collectMainSession(found, null, entry, entryPath, cutoff, resumed);
           continue;
         }
         // `<parentSessionId>/subagents/agent-<agentId>.jsonl` lives one level deeper; the
@@ -185,7 +177,7 @@ export class ClaudeAdapter implements Adapter {
           if (!sub.startsWith("agent-") || !sub.endsWith(".jsonl")) {
             continue;
           }
-          collectMainSession(found, entry, sub, join(subagentsDir, sub), cutoff, this.resumedSessions);
+          collectMainSession(found, entry, sub, join(subagentsDir, sub), cutoff, resumed);
         }
       }
     }
@@ -197,14 +189,23 @@ export class ClaudeAdapter implements Adapter {
     if (process.platform !== "win32") {
       return { ok: false, delivered: false, deferred: true, via: "none", detail: "This delivery build supports Windows only" };
     }
-    const timeoutMs = this.config.deliveryTimeoutSeconds * 1_000;
-    // `--bg --resume` queues the message and returns immediately; `backgrounded` on stdout is
-    // Claude Code's acknowledgement that it landed. If the TUI is still open it forks a copy.
-    // A background session otherwise runs in `manual` permission mode, where every tool call
-    // waits on an approval a headless session has no way to give.
+
+    const timeoutMs = this.config.claude.deliveryTimeoutSeconds * 1_000;
+    // `--bg --resume` returns `backgrounded` on success and forks if the TUI is still open.
+    // `--dangerously-skip-permissions` is needed because a background session otherwise runs
+    // in `manual` mode where every tool call would wait on a headless-unreachable approval.
+    // 当session还在前台时， 即使resume, 由于session被占用,还是会降级走到--fork-session 产生一个新的sesion
+    // 只有session不在前台时, 才会直接resume到原来的session, 并且不会产生新的sessionId, 但是后续又有逻辑说处理过的sessionId不再会被二次处理, 因此, 这里直接显式传递--fork-session, 让每次resume都产生一个新的sessionId
+    // 经测试, claude 命令暴露能够直接关闭yiyousession的命令, claude stop <id> 和 claude deamon stop <id> 都只负责管理后台session,即子Agent的session
     const result = await this.execute(
       this.bin,
-      ["--bg", "--resume", session.sessionId, "--dangerously-skip-permissions", prompt],
+      [
+        "--bg", 
+        "--resume", session.sessionId, 
+        "--fork-session",
+        "--dangerously-skip-permissions", 
+        prompt
+      ],
       { cwd: pickCwd(session.cwd), timeoutMs },
     );
     if (result.spawnError) return { ok: false, delivered: false, via: "cli-resume", detail: result.spawnError };
@@ -217,9 +218,10 @@ export class ClaudeAdapter implements Adapter {
         detail: "Queue acknowledgement timed out; inspect Claude Code before retrying. The Claude Code session was not stopped.",
       };
     }
-    if (result.code === 0 && result.out.includes("backgrounded")) {
-      this.resumedSessions.add(session.sessionId);
-      flushResumedToDisk(this.resumedSessions);
+    if (result.code === 0 ) {
+      this.config.claude.resumedSessions.add(session.sessionId);
+      this.config.flush();
+
       return {
         ok: true,
         delivered: true,
@@ -236,9 +238,6 @@ export class ClaudeAdapter implements Adapter {
     };
   }
 
-  close(): void {
-    flushResumedToDisk(this.resumedSessions);
-  }
 }
 
 function pickCwd(cwd: string): string {
@@ -293,34 +292,6 @@ function collectMainSession(
   });
 }
 
-function loadResumedFromDisk(): Set<string> {
-  try {
-    const file = join(defaultStateDir(), RESUMED_FILENAME);
-    if (!existsSync(file)) {
-      return new Set();
-    }
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
-    if (!Array.isArray(parsed)) {
-      return new Set();
-    }
-    return new Set(parsed.filter((s): s is string => typeof s === "string"));
-  } catch {
-    return new Set();
-  }
-}
-
-function flushResumedToDisk(set: Set<string>): void {
-  try {
-    const dir = defaultStateDir();
-    mkdirSync(dir, { recursive: true });
-    const file = join(dir, RESUMED_FILENAME);
-    const sorted = [...set].sort();
-    writeFileSync(file, JSON.stringify(sorted, null, 2) + "\n", "utf8");
-  } catch {
-    // best-effort
-  }
-}
-
 function safeReaddir(dir: string): string[] {
   try {
     return readdirSync(dir);
@@ -362,9 +333,7 @@ export function inspectTranscriptTail(
   const spoken = recentUtterances(lines);
   let cwd = "";
 
-  // The most recent `assistant` record wins: it is what the session was doing when its transcript
-  // ended. A single assistant record can carry both text and tool_use blocks — either counts as
-  // one assistant response. Older assistant / user / summary records are ignored.
+  // Newest assistant record wins: either text or tool_use blocks count as one response.
   for (let i = lines.length - 1; i >= 0; i--) {
     let record: Record<string, unknown>;
     try {

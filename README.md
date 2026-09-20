@@ -29,9 +29,25 @@ node dist/tide.mjs status --cli claude
 node dist/tide.mjs resume <session-id> --cli codex --dry-run
 node dist/tide.mjs resume <session-id> --cli claude --dry-run
 node dist/tide.mjs resume <session-id> --cli codex --json
-node dist/tide.mjs watch --cli codex
+node dist/tide.mjs watch --cli codex --session-all
 node dist/tide.mjs watch --cli claude --session <id>
 ```
+
+## CLI 架构与配置
+
+`src/main.ts` 解析参数，`src/commands.ts` 执行命令并负责 adapter 的生命周期；`src/watch.ts` 集中处理筛选、额度检查与监控循环；`src/codex.ts`、`src/claude.ts` 分别读取会话并投递消息。构建仅输出 `dist/tide.mjs`。
+
+配置从 `--config <path>`、`TIDE_CONFIG` 或默认 `.tide/config.json` 读取，未指定的字段使用默认值。配置在命令启动时加载，修改后需重启监控。`watch` 必须指定 `--session <id>` 或 `--session-all`，也可以在配置中设置 `sessionAllowList` / `sessionAll`。
+
+`TIDE_STATE_DIR` 设置默认配置目录；`doctor` 会确保配置中的 `stateDir` 存在并可写。Claude 的额度检查仍会发送真实探测请求。
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+测试使用隔离配置、临时状态目录和模拟 adapter，不向真实会话投递消息。
 
 ## 投递：Codex 自己的队列
 
@@ -57,7 +73,7 @@ claude --bg --resume <session-id> "<prompt>"
 - **投递成功**：进程退出码 0，且 stdout 包含 `backgrounded`。tide 不接管 TUI、不等模型整轮。
 - **会话被占用时**：原 TUI 仍开着，Claude Code 会分叉一个新会话，stdout 会带一行 `note: started a copy as <id>`。这是 Claude Code 的正常行为；tide 不挑会话 id。
 - **消息落点**：消息在那个后台会话里继续；用户用 `claude attach <id>` 或 `claude logs <id>` 看后续。
-- **每个 session 只投一次**：Claude Code 每次 `--bg --resume` 都可能 fork 新会话。tide 在 `<stateDir>/claude-resumed.json` 里记录已经投过的 session id，之后**不再把该 session 报为中断**——watcher 不会再看它，`tide status` 里也不出现，防止一个卡住的 session 在多次 sweep 里堆出 N 个 fork。要重新尝试，手动把那个 id 从文件里删掉（没有命令行开关）。
+- **每个 session 只投一次**：Claude Code 每次 `--bg --resume` 都可能 fork 新会话。tide 把已经投过的 session id 记在 config.json 的 `claude.resumedSessions` 里，之后**不再把该 session 报为中断**——watcher 不会再看它，`tide status` 里也不出现，防止一个卡住的 session 在多次 sweep 里堆出 N 个 fork。要重新尝试，从那个数组里删掉那个 id（没有命令行开关）。
 
 `tide resume --cli claude` 的 `ok: true` 是 Claude Code CLI 接受了这则入队，**不是任务做完**。
 

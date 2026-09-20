@@ -1,31 +1,24 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type CliKind = "codex" | "claude";
 
 export interface WatcherPolicy {
-  /** How long the watcher waits between sweeps. */
+  /** How long the watcher waits between sweeps, in minutes. */
   sweepIntervalMinutes: number;
-  /** A session must have been quiet for at least this long before the watcher resumes it. */
+  /** A session must have been quiet for at least this long, in minutes, before the watcher resumes it. */
   idleMinutesBeforeResume: number;
   /** Skip subagent forks; only resume parent (top-level) sessions. */
   skipSubagents: boolean;
-  /** Reserve this many slots for top-level sessions in the adapter's result window. Subagent
-   * forks fill whatever room is left. Keeps a burst of subagents from pushing parent
-   * quota-limited sessions out of the visible window. */
+  /** Reserved slots for top-level sessions before subagent forks fill the rest. */
   maxMainSessions: number;
 }
 
-/** Upper bound on the session list that callers (status, watcher) trim the adapter's result
- * to. The adapter itself returns everything within its scan cutoff — the trim happens via
- * `capWithMainReserve` so top-level sessions get a reserved slice before subagents fill in.
- * Status defaults to this value unless `--limit` is smaller. */
+/** Default cap on the session list that status and watch trim the adapter's result to. */
 export const MAX_SESSIONS_RETURNED = 100;
 
-/** Performance cutoff for the file scan: skip rollout / transcript files whose mtime is older than
- * this. Never exposed to callers — quota-interrupted sessions much older than this are not
- * actionable. */
+/** Skip rollout / transcript files whose mtime is older than this. */
 export const SCAN_MTIME_CUTOFF_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export interface ResumePolicy {
@@ -44,20 +37,8 @@ export interface ClaudeConfig {
   deliveryTimeoutSeconds: number;
   probeTimeoutSeconds: number;
   probePrompt: string;
-}
-
-export interface Config {
-  stateDir: string;
-  debug: boolean;
-  dryRun: boolean;
-  skipQuotaCheck: boolean;
-  /** Session ids (or prefixes) the watcher may resume. Ignored when sessionAll is true. */
-  sessionAllowList: string[];
-  sessionAll: boolean;
-  watchPolicy: WatcherPolicy;
-  resume: ResumePolicy;
-  codex: CodexConfig;
-  claude: ClaudeConfig;
+  /** Session ids that `claude --bg --resume` has already nudged. */
+  resumedSessions: Set<string>;
 }
 
 function packageRoot(): string {
@@ -74,99 +55,117 @@ function packageRoot(): string {
   }
 }
 
-export function defaultStateDir(): string {
-  const override = process.env["TIDE_STATE_DIR"];
-  return override ? resolve(override) : join(packageRoot(), ".tide");
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
 }
+
+function cleanIds(raw: unknown): Set<string> {
+  if (raw == null || typeof (raw as Iterable<unknown>)[Symbol.iterator] !== "function") {
+    return new Set<string>();
+  }
+  const out = new Set<string>();
+  for (const item of raw as Iterable<unknown>) {
+    if (typeof item === "string" && item.length > 0) {
+      out.add(item);
+    }
+  }
+  return out;
+}
+
+function mergeValue(current: unknown, value: unknown): unknown {
+  return isPlainObject(value) && isPlainObject(current)
+    ? { ...current, ...value }
+    : value;
+}
+
+const STATE_DIR = process.env["TIDE_STATE_DIR"]
+  ? resolve(process.env["TIDE_STATE_DIR"])
+  : join(packageRoot(), ".tide");
 
 const RESUME_PROMPT = "继续刚才的任务。先检查当前状态和上次做到哪里，再继续执行。";
 
-export function defaultConfig(): Config {
-  return {
-    stateDir: defaultStateDir(),
-    debug: false,
-    dryRun: false,
-    skipQuotaCheck: false,
-    sessionAllowList: [],
-    sessionAll: false,
-    watchPolicy: {
-      sweepIntervalMinutes: 3,
-      idleMinutesBeforeResume: 5,
-      skipSubagents: true,
-      maxMainSessions: 50,
-    },
-    resume: {
-      prompt: RESUME_PROMPT,
-    },
-    codex: {
-      enabled: true,
-      bin: "",
-      deliveryTimeoutSeconds: 20,
-    },
-    claude: {
-      enabled: true,
-      bin: "",
-      deliveryTimeoutSeconds: 20,
-      probeTimeoutSeconds: 30,
-      probePrompt: "Respond with the single word: pong",
-    },
+/** Runtime config: defaults on every field, plus the file the config was loaded from. */
+export class Config {
+  stateDir: string = STATE_DIR;
+  dryRun: boolean = false;
+  skipQuotaCheck: boolean = false;
+  sessionAllowList: string[] = [];
+  sessionAll: boolean = false;
+  watchPolicy: WatcherPolicy = {
+    sweepIntervalMinutes: 3,
+    idleMinutesBeforeResume: 5,
+    skipSubagents: true,
+    maxMainSessions: 50,
   };
-}
+  resume: ResumePolicy = { prompt: RESUME_PROMPT };
+  codex: CodexConfig = {
+    enabled: true,
+    bin: "",
+    deliveryTimeoutSeconds: 20,
+  };
+  claude: ClaudeConfig = {
+    enabled: true,
+    bin: "",
+    deliveryTimeoutSeconds: 20,
+    probeTimeoutSeconds: 30,
+    probePrompt: "Respond with the single word: pong",
+    resumedSessions: new Set<string>(),
+  };
 
-function merge(base: Config, patch: DeepPartial<Config>): Config {
-  const out = { ...base } as Record<string, unknown>;
-  const source = base as unknown as Record<string, unknown>;
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) continue;
-    const current = source[key];
-    if (value !== null && typeof value === "object" && !Array.isArray(value) && typeof current === "object") {
-      out[key] = { ...(current as object), ...(value as object) };
-    } else {
-      out[key] = value;
+  #path: string = "./.tide/config.json";
+
+  constructor(data: object = {}, path?: string) {
+    const fields = this as unknown as Record<string, unknown>;
+    for (const key of Object.keys(data)) {
+      if (key in fields) {
+        fields[key] = mergeValue(fields[key], (data as Record<string, unknown>)[key]);
+      }
+    }
+    this.claude.resumedSessions = cleanIds(this.claude.resumedSessions);
+    if (path !== undefined) this.#path = path;
+  }
+
+  toJSON(): object {
+    const data = {
+      ...this,
+      claude: {
+        ...this.claude,
+        resumedSessions: [...this.claude.resumedSessions],
+      },
+    };
+    return data;
+  }
+
+  get path(): string {
+    return this.#path;
+  }
+
+  /** Persist current in-memory state to the file load() read from. */
+  flush(): void {
+    try {
+      mkdirSync(dirname(this.#path), { recursive: true });
+      writeFileSync(this.#path, JSON.stringify(this, null, 2) + "\n", "utf8");
+    } catch (err) {
+      console.error(`Failed to write config file to ${this.#path}: ${(err as Error).message}`);
     }
   }
-  return out as unknown as Config;
-}
 
-type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? Partial<T[K]> : T[K] };
-
-export function configPathFor(explicitPath?: string): string {
-  if (explicitPath) return resolve(explicitPath);
-  const fromEnv = process.env["TIDE_CONFIG"];
-  return fromEnv ? resolve(fromEnv) : join(defaultStateDir(), "config.json");
-}
-
-export function loadConfig(explicitPath?: string): { config: Config; path: string | null } {
-  const path = configPathFor(explicitPath);
-
-  if (!existsSync(path)) {
-    if (explicitPath || process.env["TIDE_CONFIG"]) {
-      throw new Error(`no config file at ${path}`);
+  load(): Config {
+    if (!existsSync(this.#path)) {
+      return this;
     }
-    return { config: defaultConfig(), path: null };
-  }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    throw new Error(`config at ${path} is not valid JSON: ${(err as Error).message}`);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(this.#path, "utf8"));
+    } catch (err) {
+      throw new Error(`config at ${this.#path} is not valid JSON: ${(err as Error).message}`);
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`config at ${this.#path} must be a JSON object`);
+    }
+
+    Object.assign(this, new Config(parsed as object, this.#path));
+    return this;
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`config at ${path} must be a JSON object`);
-  }
-  const config = merge(defaultConfig(), parsed as DeepPartial<Config>);
-  if (!Number.isFinite(config.watchPolicy.sweepIntervalMinutes) || config.watchPolicy.sweepIntervalMinutes <= 0) {
-    throw new Error("watchPolicy.sweepIntervalMinutes must be a positive number");
-  }
-  if (!Number.isFinite(config.codex.deliveryTimeoutSeconds) || config.codex.deliveryTimeoutSeconds <= 0) {
-    throw new Error("codex.deliveryTimeoutSeconds must be a positive number");
-  }
-  if (!Number.isFinite(config.claude.deliveryTimeoutSeconds) || config.claude.deliveryTimeoutSeconds <= 0) {
-    throw new Error("claude.deliveryTimeoutSeconds must be a positive number");
-  }
-  if (!Number.isFinite(config.claude.probeTimeoutSeconds) || config.claude.probeTimeoutSeconds <= 0) {
-    throw new Error("claude.probeTimeoutSeconds must be a positive number");
-  }
-  return { config, path };
 }
