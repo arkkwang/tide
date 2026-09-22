@@ -5,6 +5,9 @@ import { Sessions } from "../src/core/sessions.ts";
 import type { Adapter, Session } from "../src/core/session.ts";
 import { resumeSession } from "../src/features/resume.ts";
 import { supervisorCommand } from "../src/providers/terminal.ts";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 test("macOS foreground launch preserves literal arguments without Windows shell dependencies", () => {
   const args = ["--model", "model", "spaces 中文 ' $HOME `literal`", "--permission-mode", "plan"];
@@ -92,4 +95,19 @@ test("native launch failure rejects instead of reporting a running process", asy
   const execution = Execution.launch("tide-definitely-missing-executable", [], { stdio: "ignore", windowsHide: true });
   await assert.rejects(execution.exited, /ENOENT/);
   assert.equal(execution.running, false);
+});
+
+test("POSIX stop terminates an owned process that ignores SIGTERM", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tide-stop-"));
+  const ready = join(dir, "ready");
+  const owned = Execution.launch(process.execPath, ["-e", "process.on('SIGTERM',()=>{}); require('node:fs').writeFileSync(process.argv[1],'ready'); setInterval(()=>{},1000)", ready], { stdio: "ignore" });
+  try {
+    const deadline = Date.now() + 5000;
+    while (!existsSync(ready)) {
+      if (Date.now() >= deadline) throw new Error("Child did not become ready");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(await owned.stop(100), true);
+    assert.equal(owned.running, false);
+  } finally { await owned.stop(100); rmSync(dir, { recursive: true, force: true }); }
 });

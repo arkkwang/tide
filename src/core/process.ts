@@ -19,10 +19,22 @@ export class Execution {
   get pid() { return this.child.pid; }
   get running() { return this.child.exitCode === null && this.child.signalCode === null && this.child.pid !== undefined; }
 
-  async stop(): Promise<boolean> {
+  async stop(graceMs = 3000): Promise<boolean> {
+    if (!Number.isFinite(graceMs) || graceMs < 0) throw new Error("Stop grace period must be nonnegative");
     if (!this.running) return true;
     if (!this.child.kill()) return false;
-    await this.exited;
-    return true;
+    const wait = async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          this.exited.then(() => true),
+          new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), graceMs); }),
+        ]);
+      } finally { clearTimeout(timer); }
+    };
+    if (await wait()) return true;
+    if (!this.running) return true;
+    if (!this.child.kill("SIGKILL")) return false;
+    return wait();
   }
 }
