@@ -223,6 +223,7 @@ test("CLI tail and wait do not probe quota or persist invocation flags", (t) => 
     ["deny-current", "--dry-run"],
     ["resume", id, "extra"],
     ["unwatch", id, "--cli", "codex", "--dry-run"],
+    ["unwatch", id.slice(0, 8), "--cli", "codex"],
     ["watch", "--session", id, "--session-all"],
     ["status", "--message", "ignored"],
     ["quota", "--cli", "typo"],

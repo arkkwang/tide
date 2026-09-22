@@ -3,6 +3,8 @@ import { Config, MAX_SESSIONS_RETURNED } from "../config.js";
 import { commandControl } from "./control.js";
 import { foreground, launchNative, wrapperInvocation } from "../features/foreground.js";
 import { monitorWorker, stopMonitor } from "../features/monitor.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 const USAGE = `tide — native CLI sessions with automatic quota recovery
 
@@ -249,6 +251,15 @@ async function main(): Promise<number> {
     case "unwatch": {
       const cli = flags.cli as "claude" | "codex";
       const id = flags.sessionAll ? "__all__" : flags.positional[0]!;
+      // UUIDs can also be excluded from a wildcard monitor without individual registration.
+      // Other IDs (including subagents) must match an existing registration exactly.
+      if (!flags.sessionAll && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) &&
+          !(id !== "__all__" && /^[a-zA-Z0-9_-]+$/.test(id) && existsSync(join(config.stateDir, "monitors", `${cli}-${id}.json`)))) {
+        const detail = "unwatch requires a full session UUID or an exact registered ID; prefixes are not supported. Use tide status to find the ID.";
+        if (flags.json) console.log(JSON.stringify({ ok: false, detail }));
+        else console.error(detail);
+        return 2;
+      }
       stopMonitor(config, cli, id);
       console.log(flags.json ? JSON.stringify({ cli, sessionId: id, monitoring: false }) : `Monitoring cancelled for ${cli}/${id === "__all__" ? "all sessions" : id}. CLI processes are unchanged.`);
       return 0;
