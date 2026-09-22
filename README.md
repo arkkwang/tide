@@ -2,6 +2,36 @@
 
 启动原生 Claude Code / Codex，监控会话，并在额度恢复后续跑原任务。
 
+## 日常操作
+
+主流程是：启动原生 CLI 做任务，Tide 自动监控；需要了解情况时查看状态与快照；需要取消自动恢复时取消监控。
+
+| 用户要做什么 | 命令 | 结果 |
+| --- | --- | --- |
+| 开始任务 | `tide claude ...` / `tide codex ...` | 在当前终端交互，绑定会话后自动监控 |
+| 找会话、查看监控情况 | `tide status --cli claude` | 会话列表、最后历史事件、监控状态，不调用模型 |
+| 看最近执行内容 | `tide snapshot <id> --cli claude` | 最近用户/助手文本及历史事件，不是实时执行保证 |
+| 纳入已有会话 | `tide watch --session <id> --cli claude` | 登记持续监控与限流后自动恢复，完成登记后返回 |
+| 取消自动恢复 | `tide unwatch <完整id> --cli claude` | 取消监控，CLI 继续运行 |
+| 手动续跑 | `tide resume <id> --cli claude` | 使用配置中的续跑提示；Claude 请求恢复窗口，Codex 排队 |
+
+例如，先运行 `tide claude`；另一个终端执行 `tide status --cli claude` 找到完整 ID，再用 `snapshot` 查看文本。结束后如果不希望 Tide 再自动恢复这个会话，执行 `unwatch`；关闭原生终端本身不会取消监控。需要立即停止当前执行时，使用原生 CLI 自己的交互；目前没有可跨 CLI 保证成功的 Tide 回合打断命令。
+
+`watch` 的产品语义包含自动恢复；单纯查看用 `status/snapshot`。`resume` 是一次明确续跑，不负责登记监控，也不是进入原生会话的通用命令。要在当前终端进入 Claude 旧会话，使用 `tide claude --resume <id>`；Codex 使用 `tide codex resume <完整UUID>`。
+
+`send/tail/wait` 用于脚本协作：`send` 补充任务，`tail` 增量读取并返回游标，`wait` 从游标等待结束事件。日常查看优先用 `snapshot`。Claude 当前不支持 `send`，两个提供方当前都不支持 `--mode interrupt`；不支持会明确失败。
+
+交互约定：
+
+- 默认输出面向人；自动化使用命令支持的 `--json`。`status/snapshot/tail/send/wait/resume/quota/unwatch` 支持 JSON，`watch/doctor/deny-current` 不支持。
+- 参数只作用于所属命令，不适用的参数、多余的位置参数、`--session` 与 `--session-all` 同用均报错。原生启动后的参数全部交给原 CLI。
+- `--cli` 对单会话查看、脚本操作和取消监控必填；`status/quota/watch/resume/deny-current` 省略时使用已启用的 CLI，可能覆盖两种 CLI。日常操作建议明确指定。
+- `--dry-run` 仅支持 `send/resume/quota/watch`；`watch` 的 dry run 是前台模拟，Ctrl-C 退出。`status/snapshot/tail` 本来就只读，无需 dry run。
+- `doctor` 只检查配置与二进制；`quota` 才探测额度，Claude 会发送真实请求。`deny-current` 是批量持久化排除操作，解除需修改配置中的 `sessionDenyList`，不属于日常停止入口。
+- 脚本退出码：0 表示该命令成功（排队或请求窗口不表示任务完成）；1 表示操作失败、能力不支持或观察到错误/中止；2 表示参数、读取或配置等错误；`wait` 超时为 3，结果未知，不自动重发。
+
+本轮收紧了参数校验：以前被忽略的参数现在会报错。`quota/unwatch` 默认输出也改为文本，依赖原 JSON 输出的脚本须添加 `--json`。
+
 ## 安装与启动
 
 ```bash

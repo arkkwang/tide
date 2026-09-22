@@ -27,6 +27,7 @@ export async function commandStatus(config: Config, cli: string | undefined, jso
   else {
     for (const report of result.clis) {
       console.log(report.cli + " — historical observations; current runtime state unknown");
+      if (report.sessions.length === 0) console.log("  No recent sessions found.");
       for (const s of report.sessions) console.log(s.sessionId + "  " + s.cwd + "  last=" + s.lastEvent + "  monitor=" + s.monitors.session.phase + "  all=" + s.monitors.all.phase + (s.excluded ? " [excluded]" : ""));
     }
     for (const problem of result.problems) console.error(problem);
@@ -34,14 +35,21 @@ export async function commandStatus(config: Config, cli: string | undefined, jso
   return problems.length ? 2 : 0;
 }
 
-export async function commandQuota(config: Config, cli: string | undefined): Promise<number> {
+export async function commandQuota(config: Config, cli: string | undefined, json = false): Promise<number> {
   const { adapters, problems } = buildAdapters(config, cli);
   const quotas: Array<{ cli: string; quota: QuotaInfo | null; error: string | null }> = [];
   for (const adapter of adapters) {
     try { quotas.push({ cli: adapter.kind, quota: await adapter.readQuota(), error: null }); }
     catch (error) { quotas.push({ cli: adapter.kind, quota: null, error: (error as Error).message }); }
   }
-  console.log(JSON.stringify({ quotas, problems }, null, 2));
+  if (json) console.log(JSON.stringify({ quotas, problems }, null, 2));
+  else {
+    for (const { cli, quota, error } of quotas) {
+      console.log(`${cli}: ${error ? "check failed — " + error : quota?.allowed ? "available for this check" : "unavailable — " + quota?.blockedReason}`);
+      for (const note of quota?.notes ?? []) console.log(`  ${note}`);
+    }
+    for (const problem of problems) console.error(problem);
+  }
   return problems.length || quotas.some((q) => q.error) ? 2 : 0;
 }
 
@@ -66,7 +74,7 @@ export async function commandResume(
     console.error(`  ! ${problem}`);
   }
   if (adapters.length === 0) {
-    return 2;
+    return refuse("No usable CLI; check tide doctor and CLI configuration.", 2);
   }
 
   const matches = await locateSessions(adapters, id);
@@ -140,7 +148,7 @@ export function commandDoctor(config: Config): number {
   const claudeBin = resolveClaudeBin(config.claude.bin);
   check("claude binary", !!claudeBin, claudeBin ?? "not found — set claude.bin or CLAUDE_BIN");
 
-  console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
+  console.log(failures === 0 ? "\nConfig and binaries found. Authentication and session control were not tested." : `\n${failures} check(s) failed`);
   return failures === 0 ? 0 : 1;
 }
 

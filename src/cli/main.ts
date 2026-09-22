@@ -4,37 +4,52 @@ import { commandControl } from "./control.js";
 import { foreground, launchNative, wrapperInvocation } from "../features/foreground.js";
 import { monitorWorker, stopMonitor } from "../features/monitor.js";
 
-const USAGE = `tide — resume Codex / Claude Code sessions after a quota limit resets
+const USAGE = `tide — native CLI sessions with automatic quota recovery
 
-Usage:
-  tide claude [CLI args...]                         Run Claude here and watch this session
-  tide codex [CLI args...]                          Run Codex here and watch this session
-  tide tail <session-id> --cli <kind> [--limit N] [--after cursor] [--json]
-  tide snapshot <session-id> --cli <kind> [--limit N] [--json]
-  tide send <session-id> --cli <kind> (--message text | --message-file path) [--dry-run] [--json]
-  tide wait <session-id> --cli <kind> --after cursor [--timeout seconds] [--json]
-  tide status [--cli <kind>] [--json] [--limit <n>]   Recorded events and monitor state (no quota probe)
-  tide quota [--cli <kind>]                        Explicit quota check (Claude sends a real probe)
-  tide resume <session-id> [--cli <kind>] [--json]   Queue continuation or explicitly launch a closed Claude session
-  tide watch --session <id> | --session-all           Register persistent monitoring
-  tide unwatch <id> | --session-all --cli <kind>      Cancel monitoring; leave CLI processes alone
-  tide doctor                                        Check that this machine can run it
-  tide deny-current [--cli <kind>]                  Add every currently quota-limited session to sessionDenyList
+Start:
+  tide claude [CLI args...]       Native Claude here, with automatic monitoring
+  tide codex [CLI args...]        Native Codex here, with automatic monitoring
+
+Inspect:
+  tide status [--cli <kind>] [--limit N] [--json]
+  tide snapshot <id> --cli <kind> [--limit N] [--json]
+
+Manage recovery:
+  tide watch [--cli <kind>] (--session <id> | --session-all)
+  tide unwatch --cli <kind> (<full-id> | --session-all) [--json]
+  tide resume <id> [--cli <kind>] [--dry-run] [--json]
+
+Script collaboration:
+  tide send <id> --cli <kind> (--message text | --message-file path) [--mode queue|interrupt] [--dry-run] [--json]
+  tide tail <id> --cli <kind> [--limit N] [--after cursor] [--json]
+  tide wait <id> --cli <kind> --after cursor [--timeout seconds] [--json]
+
+Diagnostics and configuration:
+  tide doctor
+  tide quota [--cli <kind>] [--dry-run] [--json]
+  tide deny-current [--cli <kind>]
+
+Behavior:
+  <kind> is claude or codex. Use status to find IDs.
+  status is read-only; lastEvent is historical, not live process state.
+  snapshot shows recent text; tail/wait provide incremental script observation.
+  watch enables automatic recovery and persists after this terminal closes.
+  unwatch cancels monitoring, not the CLI or its current turn.
+  resume uses the configured prompt: Codex queues it; Claude requests a visible
+    window for a closed session. Neither confirms task completion.
+  send supports Codex queue only. Claude send and interrupt fail explicitly.
+  quota probes Claude with a real model request; doctor checks config/binaries only.
+  deny-current persists exclusions for all recorded quota-limited sessions.
 
 Options:
-  --after <cursor>  Read/wait after a cursor returned by tail or send
-  --message <text>  Send literal text, without changing the configured resume prompt
-  --message-file <path>  Read the message from a UTF-8 file
-  --mode <queue|interrupt>  send only; default queue. Unsupported interruption fails explicitly.
-  --timeout <seconds>  Bounded wait (default 60); timeout never stops the session
-  --cli <kind>      Only this CLI: codex, claude
-  --dry-run         Say what would happen without resuming anything
-  --skip-quota-check  Skip the quota probe and resume any waiting session. Test/debug only.
-  --session <id>    For watch: a session id the watcher may resume. Repeatable.
-  --session-all     For watch: resume every waiting session regardless of --session list.
-  --limit <n>       For status: cap how many sessions to show (default: ${MAX_SESSIONS_RETURNED}); watch ignores it
-  --json            Machine-readable output (status, resume)
-  -h, --help        Show this help
+  --session <id>       Repeatable for watch; cannot combine with --session-all
+  --session-all        Watch/unwatch all sessions of the selected CLI
+  --limit N            status default ${MAX_SESSIONS_RETURNED}; snapshot/tail default 10
+  --timeout seconds    wait default 60; timeout never stops or resends
+  --dry-run            resume/send/quota: no action; watch: foreground simulation
+  --skip-quota-check   watch only: foreground recovery without probing (debug)
+  --json               Structured output for inspect, resume, collaboration, quota, unwatch
+  -h, --help           Show help; arguments after claude/codex belong to that CLI
 `;
 
 interface Flags {
@@ -151,34 +166,64 @@ async function main(): Promise<number> {
     console.log(USAGE);
     return 0;
   }
+  const allowed: Record<string, string[]> = {
+    status: ["cli", "limit", "json"],
+    snapshot: ["cli", "limit", "json"],
+    tail: ["cli", "limit", "after", "json"],
+    send: ["cli", "message", "messageFile", "dryRun", "mode", "json"],
+    wait: ["cli", "after", "timeout", "json"],
+    resume: ["cli", "dryRun", "json"],
+    watch: ["cli", "sessionAllowList", "sessionAll", "dryRun", "skipQuotaCheck"],
+    unwatch: ["cli", "sessionAll", "json"],
+    quota: ["cli", "dryRun", "json"],
+    doctor: [],
+    "deny-current": ["cli"],
+  };
+  const names: Record<string, string> = {
+    cli: "--cli", limit: "--limit", after: "--after", message: "--message",
+    messageFile: "--message-file", mode: "--mode", timeout: "--timeout",
+    dryRun: "--dry-run", skipQuotaCheck: "--skip-quota-check",
+    sessionAll: "--session-all", sessionAllowList: "--session", json: "--json",
+  };
+  const options = allowed[flags.command];
+  if (!options) flags.parseErrors.push(`unknown command: ${flags.command}`);
+  else {
+    for (const [key, option] of Object.entries(names)) {
+      const value = flags[key as keyof Flags];
+      if (value !== undefined && value !== false && !options.includes(key)) {
+        flags.parseErrors.push(`${option} is not supported by ${flags.command}`);
+      }
+    }
+    if (flags.cli !== undefined && !["claude", "codex"].includes(flags.cli)) {
+      flags.parseErrors.push("--cli must be claude or codex");
+    }
+    const required = ["snapshot", "tail", "send", "wait", "resume"].includes(flags.command)
+      || (flags.command === "unwatch" && !flags.sessionAll) ? 1 : 0;
+    if (flags.positional.length !== required) flags.parseErrors.push(
+      required ? `${flags.command} requires exactly one session ID` : `${flags.command} does not accept positional arguments`);
+    if (flags.sessionAll && flags.sessionAllowList) flags.parseErrors.push("--session and --session-all cannot be combined");
+    if (["snapshot", "tail", "send", "wait", "unwatch"].includes(flags.command) && !flags.cli) {
+      flags.parseErrors.push(`${flags.command} requires --cli claude|codex`);
+    }
+  }
   if (flags.parseErrors.length > 0) {
-    for (const complaint of flags.parseErrors) console.error(complaint);
-    console.error(USAGE);
+    const detail = flags.parseErrors.join("; ");
+    if (flags.json) console.log(JSON.stringify({ ok: false, detail }));
+    else console.error(detail + "\nRun tide --help for usage.");
     return 2;
   }
-  if (flags.mode !== undefined && flags.command !== "send") throw new Error("--mode is only supported by send");
 
   let config: Config;
-  if (["snapshot", "tail", "send", "wait"].includes(flags.command)) {
-    const allowed: Record<string, string[]> = {
-      snapshot: ["--cli", "--limit", "--json"],
-      tail: ["--cli", "--limit", "--after", "--json"],
-      send: ["--cli", "--message", "--message-file", "--dry-run", "--json", "--mode"],
-      wait: ["--cli", "--after", "--timeout", "--json"],
-    };
-    const used: Record<string, unknown> = { "--limit": flags.limit, "--after": flags.after, "--message": flags.message, "--message-file": flags.messageFile, "--timeout": flags.timeout, "--dry-run": flags.dryRun, "--skip-quota-check": flags.skipQuotaCheck, "--session-all": flags.sessionAll, "--session": flags.sessionAllowList };
-    const invalid = Object.entries(used).find(([key, value]) => value !== undefined && !allowed[flags.command]!.includes(key));
-    if (flags.positional.length !== 1 || invalid) {
-      console.error(invalid ? `${invalid[0]} is not supported by ${flags.command}` : `${flags.command} requires exactly one session ID`);
-      return 2;
-    }
-    return commandControl(Config.fromFile(false), { ...flags, id: flags.positional[0]! });
-  }
   try {
     config = applyFlags(Config.fromFile(false), flags);
   } catch (err) {
-    console.error(`config error: ${(err as Error).message}`);
+    const detail = `config error: ${(err as Error).message}`;
+    if (flags.json) console.log(JSON.stringify({ ok: false, detail }));
+    else console.error(detail);
     return 2;
+  }
+  if (["snapshot", "tail", "send", "wait"].includes(flags.command)) {
+    return commandControl(config, { ...flags, id: flags.positional[0]! });
   }
 
   switch (flags.command) {
@@ -188,10 +233,10 @@ async function main(): Promise<number> {
       return await commandStatus(config, flags.cli, flags.json, flags.limit);
     case "quota":
       if (flags.dryRun) {
-        console.log(JSON.stringify({ dryRun: true, detail: "No quota query performed" }));
+        console.log(flags.json ? JSON.stringify({ dryRun: true, detail: "No quota query performed" }) : "Dry run: no quota query performed.");
         return 0;
       }
-      return await commandQuota(config, flags.cli);
+      return await commandQuota(config, flags.cli, flags.json);
     case "resume":
       return await commandResume(config, flags.cli, flags.positional[0], flags.json);
     case "watch":
@@ -202,11 +247,10 @@ async function main(): Promise<number> {
       }
       return await startWatch(config, flags.cli);
     case "unwatch": {
-      if (!["claude", "codex"].includes(flags.cli ?? "") || (flags.sessionAll ? flags.positional.length !== 0 : flags.positional.length !== 1)) throw new Error("unwatch requires a full session ID or --session-all, and --cli");
       const cli = flags.cli as "claude" | "codex";
       const id = flags.sessionAll ? "__all__" : flags.positional[0]!;
       stopMonitor(config, cli, id);
-      console.log(JSON.stringify({ cli, sessionId: id, monitoring: false }));
+      console.log(flags.json ? JSON.stringify({ cli, sessionId: id, monitoring: false }) : `Monitoring cancelled for ${cli}/${id === "__all__" ? "all sessions" : id}. CLI processes are unchanged.`);
       return 0;
     }
     case "deny-current":
@@ -223,6 +267,9 @@ main()
     process.exitCode = code;
   })
   .catch((err) => {
-    console.error((err as Error).message);
+    const argv = process.argv.slice(2);
+    if (!wrapperInvocation(argv) && !argv[0]?.startsWith("__") && argv.includes("--json")) {
+      console.log(JSON.stringify({ ok: false, detail: (err as Error).message }));
+    } else console.error((err as Error).message);
     process.exit(1);
   });

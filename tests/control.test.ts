@@ -206,15 +206,34 @@ test("CLI tail and wait do not probe quota or persist invocation flags", (t) => 
   const interrupted = run(["send", id, "--cli", "codex", "--message", "correction", "--mode", "interrupt", "--json"]);
   assert.equal(interrupted.status, 1, interrupted.stderr);
   assert.equal(JSON.parse(interrupted.stdout).unsupported, true);
-  const status = run(["status", "--cli", "codex", "--dry-run", "--json"]);
+  const status = run(["status", "--cli", "codex", "--json"]);
   assert.equal(status.status, 0, status.stderr);
   assert.equal(JSON.parse(status.stdout).clis[0].sessions[0].currentState, "unknown");
   const snapshot = run(["snapshot", id, "--cli", "codex", "--json"]);
   assert.equal(snapshot.status, 0, snapshot.stderr);
   assert.equal(JSON.parse(snapshot.stdout).lastEvent, "completed");
-  const quota = run(["quota", "--cli", "codex", "--dry-run"]);
+  const quota = run(["quota", "--cli", "codex", "--dry-run", "--json"]);
   assert.equal(quota.status, 0, quota.stderr);
   assert.equal(JSON.parse(quota.stdout).dryRun, true);
+  const plainSnapshot = run(["snapshot", id, "--cli", "codex"]);
+  assert.equal(plainSnapshot.status, 0, plainSnapshot.stderr);
+  assert.match(plainSnapshot.stdout, /Last recorded event: completed/);
+  assert.match(plainSnapshot.stdout, /actual output/);
+  for (const args of [
+    ["deny-current", "--dry-run"],
+    ["resume", id, "extra"],
+    ["unwatch", id, "--cli", "codex", "--dry-run"],
+    ["watch", "--session", id, "--session-all"],
+    ["status", "--message", "ignored"],
+    ["quota", "--cli", "typo"],
+  ]) {
+    const rejected = run([...args, "--json"]);
+    assert.equal(rejected.status, 2, rejected.stdout + rejected.stderr);
+    assert.equal(JSON.parse(rejected.stdout).ok, false);
+    const plainRejected = run(args);
+    assert.equal(plainRejected.status, 2, plainRejected.stdout + plainRejected.stderr);
+    assert.match(plainRejected.stderr, /not supported|exactly one|cannot be combined|must be/);
+  }
   assert.equal(readFileSync(join(state, "config.json"), "utf8"), config);
 });
 

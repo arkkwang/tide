@@ -29,9 +29,20 @@ export async function commandControl(config: Config, options: ControlOptions): P
   const print = (result: Record<string, unknown>) => {
     if (options.json) console.log(JSON.stringify(result, null, 2));
     else {
-      const { messages, cursor, ...rest } = result;
-      console.log(JSON.stringify(rest, null, 2));
+      const { messages, cursor } = result;
+      if (result.sessionId) console.log(`${result.cli}/${result.sessionId}`);
+      if (result.lastEvent) console.log(`Last recorded event: ${result.lastEvent}; current state: ${result.currentState}`);
+      if (result.cwd) console.log(`Directory: ${result.cwd}`);
+      if (result.observedAt) console.log(`Observed: ${result.observedAt}`);
+      if (result.stage) console.log(`Delivery: ${result.stage}`);
+      if (result.status) console.log(`Observed outcome: ${result.status}`);
+      if (result.detail) console.log(`${result.ok === false ? "Not completed: " : ""}${result.detail}`);
+      if (result.evidence) console.log(String(result.evidence));
+      if (result.text) console.log(`\n[assistant]\n${result.text}`);
       for (const m of (messages ?? []) as Array<{ role: string; text: string }>) console.log(`\n[${m.role}]\n${m.text}`);
+      if (Array.isArray(messages) && messages.length === 0) console.log("No recorded text in this view.");
+      if (result.truncated) console.log("Showing a limited history snapshot.");
+      if (result.hasMore) console.log("More messages available; use tail --after with the cursor below.");
       if (cursor) console.log(`\ncursor: ${cursor}`);
     }
   };
@@ -62,7 +73,7 @@ export async function commandControl(config: Config, options: ControlOptions): P
     const cursor = snapshot.cursor(undefined, textHash(message!));
     const result = await adapter.send(session, message!, options.mode, options.dryRun);
     print({ ...identity, ...result, cursor,
-      stage: result.delivered ? "queued" : "not-confirmed" });
+      stage: result.delivered ? "queued" : result.unsupported ? "unsupported" : result.via === "dry-run" ? "dry-run" : "not-confirmed" });
     return result.ok ? 0 : 1;
   } catch (error) {
     print({ ok: false, detail: (error as Error).message });
