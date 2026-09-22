@@ -17,6 +17,7 @@ function toWindowsPath(path: string): string {
 /** Git Bash, the interpreter a delivery script runs under. `where.exe` also answers with the
  * WSL stub in `WindowsApps`, which is the same name and cannot see drive letters. */
 export function resolveBash(): string | null {
+  if (process.platform !== "win32") return existsSync("/bin/bash") ? "/bin/bash" : null;
   const fromEnv = process.env["CLAUDE_CODE_GIT_BASH_PATH"];
   if (fromEnv) {
     const candidate = toWindowsPath(fromEnv);
@@ -34,6 +35,12 @@ export function resolveBash(): string | null {
     }
   }
   return null;
+}
+
+export function supervisorCommand(platform: NodeJS.Platform, node: string, entry: string, cli: string, args: string[], bash?: string | null) {
+  if (platform !== "win32") return { binary: node, args: [entry, "__foreground", cli, ...args] };
+  if (!bash) throw new Error("Windows launch requires Git Bash; set CLAUDE_CODE_GIT_BASH_PATH");
+  return { binary: bash, args: ["-lc", `exec ${posixQuote(node.replaceAll("\\", "/"))} ${posixQuote(entry.replaceAll("\\", "/"))} __foreground ${cli} "$@"`, "tide", ...args] };
 }
 
 export interface LaunchResult {

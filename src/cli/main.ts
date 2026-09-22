@@ -1,7 +1,7 @@
 import { commandDenyCurrent, commandDoctor, commandQuota, commandResume, commandStatus, startWatch } from "./commands.js";
 import { Config, MAX_SESSIONS_RETURNED } from "../config.js";
 import { commandControl } from "./control.js";
-import { foreground, launchThroughBash, wrapperInvocation } from "../features/foreground.js";
+import { foreground, launchNative, wrapperInvocation } from "../features/foreground.js";
 import { monitorWorker, stopMonitor } from "../features/monitor.js";
 
 const USAGE = `tide — resume Codex / Claude Code sessions after a quota limit resets
@@ -140,7 +140,7 @@ async function main(): Promise<number> {
     return monitorWorker(argv[1] as "claude" | "codex", argv[2], Number(argv[3]));
   }
   const wrapper = wrapperInvocation(argv);
-  if (wrapper) return launchThroughBash(wrapper.cli, wrapper.args);
+  if (wrapper) return launchNative(wrapper.cli, wrapper.args);
   if (argv[0] === "__foreground") {
     const inner = wrapperInvocation(argv.slice(1));
     if (!inner) throw new Error("Invalid foreground CLI");

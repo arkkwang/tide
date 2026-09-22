@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { Config, type CliKind } from "../config.js";
 import { CodexAdapter, resolveCodexBin } from "../providers/codex.js";
 import { ClaudeAdapter, deliveryEnv, resolveClaudeBin } from "../providers/claude.js";
-import { claudeRecoveryArgs, posixQuote, resolveBash } from "../providers/terminal.js";
+import { claudeRecoveryArgs, resolveBash, supervisorCommand } from "../providers/terminal.js";
 import type { Session } from "../core/session.js";
 
 const DISCOVERY_MS = 3000;
@@ -31,13 +31,11 @@ export function stillQuotaLimited(before: Session, current: Session | undefined)
   return sameInterruption(before, current);
 }
 
-/** Enter Git Bash once, then the inner Node supervisor owns the native CLI PID and inherited TTY. */
-export async function launchThroughBash(cli: CliKind, args: string[]): Promise<number> {
-  const bash = resolveBash();
-  if (!bash) throw new Error("tide launch requires Git Bash; set CLAUDE_CODE_GIT_BASH_PATH");
-  const node = process.execPath.replaceAll("\\", "/");
-  const entry = resolve(process.argv[1]!).replaceAll("\\", "/");
-  const child = Execution.launch(bash, ["-lc", `exec ${posixQuote(node)} ${posixQuote(entry)} __foreground ${cli} "$@"`, "tide", ...args], {
+/** Keep the native TTY; only Windows needs to enter Git Bash first. */
+export async function launchNative(cli: CliKind, args: string[]): Promise<number> {
+  const command = supervisorCommand(process.platform, process.execPath, resolve(process.argv[1]!), cli, args,
+    process.platform === "win32" ? resolveBash() : null);
+  const child = Execution.launch(command.binary, command.args, {
     stdio: "inherit", env: deliveryEnv(), windowsHide: false,
   });
   const ignore = () => {};

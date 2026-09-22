@@ -385,9 +385,6 @@ export class CodexAdapter implements Adapter {
   }
 
   async send(session: Session, prompt: string): Promise<DeliveryResult> {
-    if (process.platform !== "win32") {
-      return { ok: false, delivered: false, deferred: true, via: "none", detail: "This delivery build supports Windows only" };
-    }
     const timeoutMs = this.config.deliveryTimeoutSeconds * 1_000;
     const result = await runChildProcess(this.bin, ["queue", "--thread", session.sessionId, "--message", prompt], {
       cwd: pickCwd(session.cwd), timeoutMs,

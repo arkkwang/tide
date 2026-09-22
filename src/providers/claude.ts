@@ -265,7 +265,7 @@ export class ClaudeAdapter implements Adapter {
     mkdirSync(deliveriesDir, { recursive: true });
     // Only the script path ever reaches a command line. The cwd and the prompt are read by the
     // window's shell, so POSIX quoting covers them on either platform.
-    const scriptPath = join(deliveriesDir, `${session.sessionId}.sh`);
+    const scriptPath = join(deliveriesDir, `${session.sessionId}.${process.platform === "darwin" ? "command" : "sh"}`);
     const optionsPath = join(this.config.stateDir, "monitors", `claude-${session.sessionId}.options.json`);
     const originalArgs = existsSync(optionsPath) ? JSON.parse(readFileSync(optionsPath, "utf8")) : [];
     if (!Array.isArray(originalArgs) || originalArgs.some((a) => typeof a !== "string")) throw new Error("Invalid saved Claude launch options");

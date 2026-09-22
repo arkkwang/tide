@@ -4,6 +4,18 @@ import { Execution } from "../src/core/process.ts";
 import { Sessions } from "../src/core/sessions.ts";
 import type { Adapter, Session } from "../src/core/session.ts";
 import { resumeSession } from "../src/features/resume.ts";
+import { supervisorCommand } from "../src/providers/terminal.ts";
+
+test("macOS foreground launch preserves literal arguments without Windows shell dependencies", () => {
+  const args = ["--model", "model", "spaces 中文 ' $HOME `literal`", "--permission-mode", "plan"];
+  assert.deepEqual(supervisorCommand("darwin", "/usr/local/bin/node", "/Users/me/tide project/dist/tide.mjs", "claude", args), {
+    binary: "/usr/local/bin/node", args: ["/Users/me/tide project/dist/tide.mjs", "__foreground", "claude", ...args],
+  });
+  const windows = supervisorCommand("win32", "D:\\Node JS\\node.exe", "D:\\my project\\tide.mjs", "claude", args, "D:\\Git\\bin\\bash.exe");
+  assert.deepEqual(windows.args.slice(3), args);
+  assert.ok(windows.args[1]!.includes('"$@"'));
+  assert.throws(() => supervisorCommand("win32", "node", "tide.mjs", "claude", []), /Git Bash/);
+});
 
 const session: Session = { sessionId: "test", cwd: process.cwd(), isSubagent: false, lastAssistantAt: 1, lastEvent: "running" };
 function provider(): Adapter {

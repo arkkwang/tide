@@ -13,9 +13,9 @@ tide codex
 tide codex resume <完整会话 UUID>
 ```
 
-未安装本地命令时使用 `node /绝对路径/tide/dist/tide.mjs`。包装入口通过 Git Bash 启动，CLI 保持当前终端前台交互，后续参数交给原 CLI。帮助、版本及已识别的非交互子命令仅透传，不创建监控。
+未安装本地命令时使用 `node /绝对路径/tide/dist/tide.mjs`。Windows 包装入口通过 Git Bash 启动；macOS 在当前终端直接启动前台托管进程。CLI 保持当前终端前台交互，后续参数交给原 CLI。帮助、版本及已识别的非交互子命令仅透传，不创建监控。
 
-Windows 的 Git Bash 可通过 `CLAUDE_CODE_GIT_BASH_PATH` 指定，例如 `D:/workspace/utils/Git/bin/bash.exe`。本轮支持和验证平台为 Windows Git Bash。
+Windows 的 Git Bash 可通过 `CLAUDE_CODE_GIT_BASH_PATH` 指定，例如 `D:/workspace/utils/Git/bin/bash.exe`。目标平台为 Windows 与 macOS；当前实机验证环境仅有 Windows Git Bash。macOS 前台启动不需要 Git Bash，恢复窗口使用 Terminal 和 `.command` 脚本，尚需 macOS 实机验收。平台差异集中在终端入口，不使用系统进程扫描或窗口操作作为会话通信通道。
 
 包装入口绑定到确定的会话后，会启动独立监控进程。前台存在时由包装入口处理恢复，后台进程待命；前台进程退出后后台接续。因此关闭原终端不会取消已登记的监控。只有有效限流记录才会触发恢复，普通退出或正常回合完成不会自动重新拉起 CLI。
 
@@ -110,7 +110,13 @@ src/
 
 接入收敛尚未完成：Codex 当前仍有 App Server、CLI queue 和历史文件读取；Claude 仍使用原有历史观测与原生恢复。没有增加私有 socket、终端输入注入或新的兜底通道。Claude Plugin/Channels 实验保持暂停；未宣称活跃发送、立即打断或单一路径验证成功。
 
-扫描仍限于最近七天范围，已知历史读取和游标成本尚未消除。macOS 窗口代码保留原状，不在本轮验证范围。
+扫描仍限于最近七天范围，已知历史读取和游标成本尚未消除。
+
+2026-09-22 的独立 Codex App Server 验证通过了：两个 WebSocket 客户端共享实时状态、原生 TUI 恢复同一会话、真实回复及结构化快照、运行时排队、跨连接打断确认、关闭原生终端后继续控制、监控连接重连。尚未替换正式提供方；让 TUI 创建新会话并完整保留参数的验证遇到新目录信任提示，未通过验收。用户确认后续优先处理 Claude。
+
+复现脚本为 `scripts/probe-codex-app-server.mjs`，仅依赖 Node 和本机 Codex，通过 `CODEX_BIN` 可指定二进制。`node --experimental-websocket scripts/probe-codex-app-server.mjs` 只验证协议，不发模型任务；`--turns` 会发真实请求；`--native` 必须从真实交互终端运行，会在当前终端显示原生 TUI。脚本不调用 PowerShell 或 Windows 进程/网络查询 API。原生界面的跨平台重现仍需实机验证；它不会自动接受信任或权限提示。
+
+Claude 接入调查仍未通过单一路径验收。[官方 agent view](https://code.claude.com/docs/en/agent-view) 提供状态查询与后台会话管理，但不等价于完整外部控制 API；[Agent SDK](https://code.claude.com/docs/en/agent-sdk) 是程序化代理入口，不能直接当作现有原生终端的控制接口。[当前 Channels 文档](https://code.claude.com/docs/en/channels) 已允许 Anthropic Console API key，先前本机不可用的具体原因仍未确定，不能笼统归因于 API key 或 MiniMax。没有重新启用 Plugin 实验，也没有添加跨会话 socket 等补充通信路径。
 
 ```bash
 npm run typecheck
