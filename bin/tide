@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_path="${BASH_SOURCE[0]}"
+while [[ -L "$source_path" ]]; do
+  base="$(cd -- "$(dirname -- "$source_path")" && pwd)"
+  source_path="$(readlink -- "$source_path")"
+  [[ "$source_path" == /* ]] || source_path="$base/$source_path"
+done
+entry="$(cd -- "$(dirname -- "$source_path")/.." && pwd)/dist/tide.mjs"
+case "${OSTYPE:-}" in
+  msys*|cygwin*)
+    entry="$(cygpath -m "$entry")"
+    # Literal text is not a filesystem argument. This must happen before Node starts.
+    case "${1:-}" in send|plugin) export MSYS2_ARG_CONV_EXCL='*' ;; esac
+    ;;
+esac
+exec node "$entry" "$@"

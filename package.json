@@ -2,19 +2,26 @@
   "name": "tide",
   "version": "0.1.0",
   "private": true,
-  "description": "Watch Codex / Claude Code sessions interrupted by quota limits, and auto-resume them once quota recovers",
+  "description": "Visible interactive shell sessions with text, key and screen access for agents",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "npm run build && node --import tsx --test tests/control.test.ts tests/recovery.test.ts tests/monitor.test.ts tests/core.test.ts",
-    "build": "esbuild src/cli/main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/tide.mjs --banner:js=\"#!/usr/bin/env node\"",
-    "dev": "tsx src/cli/main.ts",
+    "test": "npm run build && node --import tsx --test tests/terminal.test.ts tests/session.test.ts tests/help.test.ts",
+    "build": "node scripts/build.mjs",
+    "link:local": "npm run build && npm link --ignore-scripts --offline --no-audit --no-fund",
+    "prepack": "npm run build",
+    "dev": "npm run build && node dist/tide.mjs",
     "typecheck": "tsc --noEmit"
   },
   "bin": {
-    "tide": "dist/tide.mjs"
+    "tide": "bin/tide"
+  },
+  "files": ["bin/", "dist/", "examples/", "docs/", "README.md"],
+  "dependencies": {
+    "@xterm/headless": "5.5.0",
+    "node-pty": "1.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
