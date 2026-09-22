@@ -4,7 +4,7 @@ import { buildAdapters } from "../providers/index.js";
 import type { QuotaInfo, Session } from "../core/session.js";
 import { ensureMonitor, monitorEnabled, monitorState } from "../features/monitor.js";
 import { resolveCodexBin } from "../providers/codex.js";
-import { resolveClaudeBin } from "../providers/claude.js";
+import { resolveClaudeBin } from "../providers/claude/adapter.js";
 import {
   Watcher,
   capWithMainReserve,

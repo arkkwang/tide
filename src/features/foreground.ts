@@ -7,7 +7,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Config, type CliKind } from "../config.js";
 import { CodexAdapter, resolveCodexBin } from "../providers/codex.js";
-import { ClaudeAdapter, deliveryEnv, resolveClaudeBin } from "../providers/claude.js";
+import { ClaudeAdapter, deliveryEnv, resolveClaudeBin } from "../providers/claude/adapter.js";
 import { claudeRecoveryArgs, resolveBash, supervisorCommand } from "../providers/terminal.js";
 import type { Session } from "../core/session.js";
 

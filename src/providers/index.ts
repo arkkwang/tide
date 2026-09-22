@@ -1,5 +1,5 @@
 import { CodexAdapter, resolveCodexBin } from "./codex.js";
-import { ClaudeAdapter, resolveClaudeBin } from "./claude.js";
+import { ClaudeAdapter, resolveClaudeBin } from "./claude/adapter.js";
 import type { Config } from "../config.js";
 import { Sessions } from "../core/sessions.js";
 

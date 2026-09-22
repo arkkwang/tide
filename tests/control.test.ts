@@ -6,7 +6,8 @@ import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { holderRefusal, inspectTranscriptTail } from "../src/providers/claude.ts";
+import { holderRefusal } from "../src/providers/claude/adapter.ts";
+import { inspectTranscriptTail } from "../src/providers/claude/history.ts";
 import { inputMessage } from "../src/cli/control.ts";
 import { executionSnapshot, readTranscript } from "../src/providers/transcript.ts";
 import { tailTranscript, waitForTurn, textHash } from "../src/features/conversation.ts";

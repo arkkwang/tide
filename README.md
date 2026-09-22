@@ -82,6 +82,10 @@ src/
   core/sessions.ts         会话选择、只读监控、状态、快照、发送与启动入口
   core/process.ts          原生进程启动、退出等待、停止自有进程
   providers/               Claude/Codex 接入、事件解码、原生终端启动
+    claude/adapter.ts      Claude CLI 查询、额度探测及显式窗口恢复
+    claude/history.ts      Claude 历史目录扫描与文件尾部摘要（只读）
+    transcript.ts          两种 CLI 共用的历史读取入口、事件解码与快照
+    terminal.ts            平台终端入口、shell 引用及恢复参数
   features/                恢复、前台托管、后台监控生命周期、tail/wait
   cli/                     参数、命令路由与输出
   config.ts                配置读取及本次覆盖
@@ -117,6 +121,27 @@ src/
 复现脚本为 `scripts/probe-codex-app-server.mjs`，仅依赖 Node 和本机 Codex，通过 `CODEX_BIN` 可指定二进制。`node --experimental-websocket scripts/probe-codex-app-server.mjs` 只验证协议，不发模型任务；`--turns` 会发真实请求；`--native` 必须从真实交互终端运行，会在当前终端显示原生 TUI。脚本不调用 PowerShell 或 Windows 进程/网络查询 API。原生界面的跨平台重现仍需实机验证；它不会自动接受信任或权限提示。
 
 Claude 接入调查仍未通过单一路径验收。[官方 agent view](https://code.claude.com/docs/en/agent-view) 提供状态查询与后台会话管理，但不等价于完整外部控制 API；[Agent SDK](https://code.claude.com/docs/en/agent-sdk) 是程序化代理入口，不能直接当作现有原生终端的控制接口。[当前 Channels 文档](https://code.claude.com/docs/en/channels) 已允许 Anthropic Console API key，先前本机不可用的具体原因仍未确定，不能笼统归因于 API key 或 MiniMax。没有重新启用 Plugin 实验，也没有添加跨会话 socket 等补充通信路径。
+
+### Claude 维护边界
+
+当前实现是保留的混合接入，不是已完成的单一官方协议接入。代码按职责隔离，不能把目录整理视为能力补齐。
+
+| 机制 | 负责什么 | 不能据此推断什么 |
+| --- | --- | --- |
+| 原生 CLI + `agents --json` | 启动、按 PID 绑定、核对会话持有者 | 一次查询不能消除查询后其他进程启动的竞态，也不是实时消息接口 |
+| `history.ts` + `transcript.ts` | 只读历史扫描、事件解释、文本快照与游标 | 文件格式不是稳定控制协议；历史完成不表示进程退出，助手文本不表示回合结束 |
+| `readQuota()` 的 `claude -p` | 真实请求探测当次可用性 | 会消耗额度；不能代表原会话所用模型一定可用 |
+| `launchSession()` + `terminal.ts` | 为关闭后的会话请求可见恢复窗口 | 启动请求不是投递确认；不能替代运行中的 `send` 或回合打断 |
+
+修改时遵守以下边界：
+
+- Claude 没有实现 `Adapter.send`；不支持由核心明确返回。不要通过恢复窗口、JSONL 写入、输入注入或另加 socket 将其伪装成支持。
+- 历史事件语义统一在 `transcript.ts` 的 `parseEvent` 中维护；`history.ts` 复用它。增加事件格式时同步验证状态和快照，避免两套解释。
+- 进程持有者未知或查询失败时拒绝恢复。前台仅停止自己启动且核对为唯一空闲持有者的进程；不能按历史 PID 接管其他会话。
+- Windows 的 Claude 命令通过 Git Bash 执行；不要用 PowerShell 中的认证结果判断 Claude 不可用。macOS 新窗口由 Terminal 打开，其环境不保证继承调用进程，认证与自定义 API 环境仍需实机验证。
+- Plugin/Channels 实验保留在独立的 `../claude-plugin-probe` 中，没有接入产品。Hooks 成功、MCP 启动成功均不代表 Channel 投递成功；当前实验明确收到 Channels 不可用。
+
+未来替换接入时，先在独立验证中确认原生终端、参数透传、会话绑定、状态/快照、排队发送、打断确认及断连后的行为，再整体替换 Claude 提供方。核心和恢复策略只消费提供方契约；不要继续在现有实现上拼补充通道。Windows/macOS 都必须单独验收，未知结果保持未知。
 
 ```bash
 npm run typecheck
