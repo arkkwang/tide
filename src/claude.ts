@@ -17,7 +17,7 @@ import {
   type Config,
 } from "./config.js";
 import { messageText, oneLine, runChildProcess, short } from "./util.js";
-import { launchWindow, posixQuote } from "./window.js";
+import { launchWindow, posixQuote, resolveBash } from "./window.js";
 import {
   SPOKEN_CHARS,
   SPOKEN_COUNT,
@@ -79,7 +79,7 @@ const PARENT_SESSION_MARKERS = [
 
 /** What a delivered session runs under: tide's own environment (credentials, model, the Git
  * Bash path), minus the markers of whichever session started tide. */
-function deliveryEnv(): NodeJS.ProcessEnv {
+export function deliveryEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const name of PARENT_SESSION_MARKERS) {
     delete env[name];
@@ -119,14 +119,17 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async readQuota(): Promise<QuotaInfo> {
-    // probe runs without hooks/plugins, leaves no transcript, fails fast on 429
+    const bash = resolveBash();
+    if (!bash) throw new Error("No Git Bash found for Claude quota probe");
+    // --bare disables OAuth on current Claude versions; keep the user's normal auth environment.
+    const args = ["-p", this.config.claude.probePrompt, "--no-session-persistence", "--output-format", "json"];
     const result = await runChildProcess(
-      this.bin,
-      ["-p", this.config.claude.probePrompt, "--bare", "--no-session-persistence", "--output-format", "json"],
+      bash,
+      ["-lc", [this.bin.replaceAll("\\", "/"), ...args].map(posixQuote).join(" ")],
       {
         cwd: process.cwd(),
         timeoutMs: this.config.claude.probeTimeoutSeconds * 1_000,
-        env: { ...process.env, CLAUDE_CODE_MAX_RETRIES: "0" },
+        env: { ...deliveryEnv(), CLAUDE_CODE_MAX_RETRIES: "0" },
       },
     );
     if (result.spawnError) {
@@ -221,10 +224,16 @@ export class ClaudeAdapter implements Adapter {
     if (!session.cwd || !existsSync(session.cwd)) {
       return { ok: false, delivered: false, via: "cli-resume", detail: `session cwd is not on disk: ${session.cwd || "(unset)"}` };
     }
-    // Resuming a session id that a live claude process holds does not fork: it interrupts that
-    // process's in-flight turn and takes the session over, leaving the holder alive but out of
-    // sync with the transcript. The holder is terminated first.
-    const killed = await this.killHolders(session.sessionId);
+    if (!/^[a-zA-Z0-9_-]+$/.test(session.sessionId) || session.isSubagent) {
+      return { ok: false, delivered: false, via: "cli-resume", detail: "Only a main session with a valid ID can be resumed" };
+    }
+    const bash = resolveBash();
+    if (!bash) return { ok: false, delivered: false, via: "cli-resume", detail: "No Git Bash found" };
+    const holders = await runChildProcess(bash, ["-lc", `${posixQuote(this.bin.replaceAll("\\", "/"))} agents --json`], {
+      timeoutMs: AGENTS_LIST_TIMEOUT_MS, env: deliveryEnv(),
+    });
+    const refusal = holderRefusal(holders, session.sessionId);
+    if (refusal) return { ok: false, delivered: false, deferred: true, via: "cli-resume", detail: refusal };
 
     const deliveriesDir = join(this.config.stateDir, "deliveries");
     mkdirSync(deliveriesDir, { recursive: true });
@@ -237,7 +246,7 @@ export class ClaudeAdapter implements Adapter {
         "#!/bin/bash",
         `cd ${posixQuote(session.cwd)} || exit 1`,
         // Unattended, the session otherwise waits on approvals nothing can answer.
-        `${posixQuote(this.bin)} --resume ${session.sessionId} --dangerously-skip-permissions ${posixQuote(prompt)}`,
+        `${posixQuote(this.bin.replaceAll("\\", "/"))} --resume ${posixQuote(session.sessionId)} --dangerously-skip-permissions ${posixQuote(prompt)}`,
         "",
       ].join("\n"),
       "utf8",
@@ -253,60 +262,27 @@ export class ClaudeAdapter implements Adapter {
     if (!launched.ok) {
       return { ok: false, delivered: false, via: "cli-resume", detail: launched.detail };
     }
-    const cleared = killed.length > 0 ? `; terminated ${killed.map((pid) => `pid ${pid}`).join(", ")}` : "";
     return {
       ok: true,
       delivered: true,
       via: "cli-resume",
-      detail: `window requested via ${launched.detail}${cleared}`,
+      detail: `window requested via ${launched.detail}; not an acceptance or completion acknowledgement`,
     };
   }
 
-  /** Terminate every live process holding `sessionId`, and return their pids. Reads only
-   * `sessionId` and `pid` from `agents --json`; `pid` is present on interactive entries only,
-   * so a background job holding the same id is left alone. An empty result means nothing held
-   * it or the listing failed — delivery proceeds either way. */
-  private async killHolders(sessionId: string): Promise<number[]> {
-    const result = await runChildProcess(this.bin, ["agents", "--json"], {
-      timeoutMs: AGENTS_LIST_TIMEOUT_MS,
-    });
-    if (result.spawnError || result.timedOut || result.code !== 0) {
-      return [];
-    }
-    let entries: unknown;
-    try {
-      entries = JSON.parse(result.out);
-    } catch {
-      return [];
-    }
-    if (!Array.isArray(entries)) {
-      return [];
-    }
-    const killed: number[] = [];
-    for (const entry of entries) {
-      if (!entry || typeof entry !== "object") continue;
-      const row = entry as Record<string, unknown>;
-      if (row["sessionId"] !== sessionId) continue;
-      const pid = row["pid"];
-      if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) continue;
-      if (terminate(pid)) {
-        killed.push(pid);
-      }
-    }
-    return killed;
-  }
 }
 
-/** `process.kill` is TerminateProcess on Windows and SIGTERM elsewhere. A pid that is already
- * gone throws instead of reporting anything the caller can use, so failure reads as "not
- * terminated". */
-function terminate(pid: number): boolean {
-  try {
-    process.kill(pid);
-    return true;
-  } catch {
-    return false;
+export function holderRefusal(result: { spawnError: string | null; timedOut: boolean; code: number | null; out: string }, sessionId: string): string | null {
+  const unknown = "Cannot confirm session ownership; no window opened. Inspect Claude Code before retrying.";
+  if (result.spawnError || result.timedOut || result.code !== 0) return unknown;
+  let entries: unknown;
+  try { entries = JSON.parse(result.out); } catch { return unknown; }
+  if (!Array.isArray(entries)) return unknown;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || typeof entry.sessionId !== "string") return unknown;
+    if (entry.sessionId === sessionId) return "Session is held by Claude Code; use its visible window or close it before sending. Nothing was stopped.";
   }
+  return null;
 }
 
 /** True when this file lives under a `<sessionId>/subagents/` directory, i.e. it is a forked
@@ -324,7 +300,6 @@ function collectMainSession(
   file: string,
   cutoff: number,
 ): void {
-  const sessionId = entry.replace(/\.jsonl$/, "");
   let mtimeMs: number;
   try {
     mtimeMs = statSync(file).mtimeMs;
@@ -340,9 +315,12 @@ function collectMainSession(
   }
   const lastAssistantAt = state.lastAssistantAt ?? mtimeMs;
   const isSubagent = isSubagentTranscript(file);
+  const sessionId = isSubagent ? entry.replace(/\.jsonl$/, "") : state.sessionId;
+  if (!sessionId) return;
 
   out.push({
     sessionId,
+    transcriptPath: file,
     cwd: state.cwd,
     lastAssistantAt,
     model: state.model,
@@ -377,6 +355,7 @@ const HUMAN_PROMPT_SOURCES = new Set(["typed", "queued", "suggestion_accepted"])
 const PROMPT_SOURCE = "promptSource";
 
 interface TailState {
+  sessionId: string | null;
   status: SessionStatus;
   cwd: string;
   lastAssistantAt: number | null;
@@ -387,11 +366,19 @@ interface TailState {
 /** Bytes of transcript tail that decide what the session was doing. */
 const TAIL_MAX_BYTES = 2_000_000;
 
-function inspectTranscriptTail(file: string): TailState | null {
+export function inspectTranscriptTail(file: string): TailState | null {
   const lines = readTailLines(file, TAIL_MAX_BYTES);
   const model = newestModel(lines);
   const spoken = recentUtterances(lines);
   let cwd = "";
+  let sessionId: string | null = null;
+  for (const line of lines) {
+    try {
+      const row = JSON.parse(line);
+      if (typeof row.sessionId === "string") sessionId = row.sessionId;
+      if (typeof row.cwd === "string") cwd = row.cwd;
+    } catch {}
+  }
 
   // Newest assistant record wins: either text or tool_use blocks count as one response.
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -402,6 +389,12 @@ function inspectTranscriptTail(file: string): TailState | null {
       continue;
     }
     const type = record["type"];
+    if (type === "user" && record["isMeta"] !== true) {
+      const content = (record["message"] as { content?: unknown } | undefined)?.content;
+      if (typeof content === "string" || (Array.isArray(content) && content.some((p) => p?.type === "text"))) {
+        return { sessionId, status: "running", cwd, lastAssistantAt: null, model, spoken };
+      }
+    }
     if (!cwd && typeof record["cwd"] === "string") cwd = record["cwd"] as string;
     if (type !== "assistant") {
       continue;
@@ -410,14 +403,16 @@ function inspectTranscriptTail(file: string): TailState | null {
     if (record["isApiErrorMessage"] === true) {
       const tag = typeof record["error"] === "string" ? (record["error"] as string) : null;
       const status: SessionStatus = tag === QUOTA_ERROR_TAG ? "quota-limited" : "errored";
-      return { status, cwd, lastAssistantAt: at, model, spoken };
+      return { sessionId, status, cwd, lastAssistantAt: at, model, spoken };
     }
-    return { status: "completed", cwd, lastAssistantAt: at, model, spoken };
+    const message = record["message"] as { stop_reason?: string; content?: Array<{ type?: string }> } | undefined;
+    const status = message?.stop_reason === "tool_use" || message?.content?.some((p) => p.type === "tool_use") ? "running" : "completed";
+    return { sessionId, status, cwd, lastAssistantAt: at, model, spoken };
   }
 
   // No assistant record in the tail window — only a human prompt without any reply yet,
   // so the session is waiting on the model, not on the user.
-  return { status: "running", cwd, lastAssistantAt: null, model, spoken };
+  return { sessionId, status: "running", cwd, lastAssistantAt: null, model, spoken };
 }
 
 function recentUtterances(lines: string[]): Utterance[] {

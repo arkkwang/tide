@@ -16,7 +16,7 @@ function toWindowsPath(path: string): string {
 
 /** Git Bash, the interpreter a delivery script runs under. `where.exe` also answers with the
  * WSL stub in `WindowsApps`, which is the same name and cannot see drive letters. */
-function resolveBash(): string | null {
+export function resolveBash(): string | null {
   const fromEnv = process.env["CLAUDE_CODE_GIT_BASH_PATH"];
   if (fromEnv) {
     const candidate = toWindowsPath(fromEnv);

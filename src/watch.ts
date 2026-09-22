@@ -36,6 +36,7 @@ export type SessionStatus =
 
 export interface Session {
   sessionId: string;
+  transcriptPath?: string;
   cwd: string;
   /** Timestamp of the most recent assistant response, in unix ms. An assistant response is
    * anything the model itself produced — a text reply or a tool call — regardless of whether

@@ -11,7 +11,7 @@ import {
 import { type Config, MAX_SESSIONS_RETURNED } from "./config.js";
 import { formatDuration } from "./util.js";
 
-function buildAdapters(
+export function buildAdapters(
   config: Config,
   cli?: string,
 ): { adapters: Adapter[]; problems: string[] } {
@@ -193,7 +193,7 @@ export async function commandStatus(
 /** Every session a user-supplied id resolves to, across all enabled adapters. The watcher is
  * the one that decides which statuses to act on — `tide resume <id>` is a manual command and
  * does not filter on status. */
-async function locateSessions(
+export async function locateSessions(
   adapters: Adapter[],
   id: string,
 ): Promise<Array<{ adapter: Adapter; session: Session }>> {

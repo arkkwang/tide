@@ -142,10 +142,11 @@ export class Config {
   /** Construct a Config from the canonical path. If the file is missing, write a defaults-only
    * copy and return a Config that reflects those defaults. If it exists, parse it and merge
    * its keys over the class defaults. Throws on read / write / parse failures. */
-  static fromFile(): Config {
+  static fromFile(persistDefaults = true): Config {
     const path = join(STATE_DIR, CONFIG_FILENAME);
     if (!existsSync(path)) {
       const fresh = new Config();
+      if (!persistDefaults) return fresh;
       try {
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, JSON.stringify(serializeForDisk(fresh), null, 2) + "\n", "utf8");

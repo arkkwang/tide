@@ -2,9 +2,50 @@
 
 在 CLI 额度恢复后，把”继续”发回原会话。
 
+## 启动并自动监控
+
+在 Git Bash 中构建后，可用 `node /绝对路径/tide/dist/tide.mjs`；已安装本地命令时直接用 `tide`：
+
+```bash
+tide claude
+tide claude --model <model> --permission-mode plan "检查这个项目"
+tide claude --resume <session-id>
+tide codex
+tide codex -m <model> --no-alt-screen
+tide codex resume <session-id>
+```
+
+CLI 在**当前终端前台**运行，输入、输出与原 CLI 一样。`claude` / `codex` 后的参数交给原 CLI，不按 Tide 的 `--cli` / `--json` 等参数解析。`--help`、`--version` 和常见非交互子命令只透传，不监控。
+
+同一个 Tide 进程在后台检查这次会话，日志写入 `.tide/launches/`，不刷进 CLI 界面。退出 CLI 就停止监控，不留下常驻 watcher；关闭终端也不再自动恢复。启动包装按正常恢复运行，忽略旧配置里的调试开关 `dryRun` / `skipQuotaCheck`（启动时提示），仍尊重 `sessionDenyList`、等待时间和检查间隔。不要再为同一会话额外启动 `tide watch`。
+
+- Claude 按启动进程的 PID，从 `claude agents --json` 取得会话 ID；不按目录、文件名或“最新聊天”猜。限流恢复时，再核对该进程仍独占同一限流会话，然后只重启这个由 Tide 启动的进程，在当前终端恢复原会话。用户已经发送新消息则不重启。首次参数原样传递；恢复不重复最初的任务文本，保留代码中列明的模型、权限、settings、工具和目录选项。未列明的新 CLI 选项仅保证首次透传。
+- Codex 新会话由原生 App Server 创建，并通过原生接口写入一条简短的 Tide 启动说明使空会话可恢复，再把确定的 ID 交给前台 CLI；这一步不调用模型。`resume` 目前要求显式 UUID，选择器 / `--last`、远程会话请直接用原 `codex`。恢复时向同一会话入队，不重启 Codex。此版本只绑定启动时的 Codex 会话，换会话请退出后重新运行包装命令。
+- 正常启动不会主动查询额度；只有观察到限流且达到等待时间才检查。Claude 的额度检查会产生真实请求费用。
+
+Windows Git Bash 是本轮验证平台。`npm run dev -- claude` 不用于包装启动，请先构建再运行 `dist/tide.mjs`。
+
+## 读取、发送与等待
+
+```bash
+tide tail <id> --cli claude --limit 5 --json
+tide tail <id> --cli codex --after <cursor> --limit 10 --json
+tide send <id> --cli claude --message-file ./task.txt --json
+tide send <id> --cli codex --message "继续修复测试" --dry-run --json
+tide wait <id> --cli claude --after <cursor> --timeout 60 --json
+```
+
+`tail` 读取用户和助手的文本，不输出思考、工具参数或工具结果。首次给最近 N 条；`--after` 给后续新增消息，`hasMore` 为 true 时继续用返回的 cursor 读取。多行、中文原样保留；尚未写完的 JSONL 行留到下次读取。游标绑定会话和已有内容，文件被替换或截断会明确报错。
+
+`send` 必须且只能指定 `--message` / `--message-file` 之一。文件按 UTF-8 读取；不改配置中的默认续跑提示。返回的 `cursor` 是投递前的基线，并关联这次消息。Codex 的 `stage: queued` 表示入队，Claude 的 `stage: window-requested` 只表示已请求打开**可见 Git Bash 终端窗口**；都不是执行完成。Claude 若被任何交互或后台会话占用，或无法确认占用情况，就拒绝发送，不终止原进程。可在原窗口输入，或关闭原窗口后再发送。`--dry-run` 不投递、不打开窗口。
+
+`wait` 必须使用 `send` 或 `tail` 的 cursor；不会拿旧回复当作本轮完成。使用 `send` 的 cursor 时，先看到该消息真正提交才接受后续结果。Codex 认 `task_complete` / `turn_aborted`，Claude 认 `system.turn_duration` 或 API 错误，不把工具调用或静默当作完成。这里的 `completed` 仅指一轮执行结束，质量仍需验收；等待输入/权限等缺少可靠终态的情况会超时。退出码：0 本轮正常结束，1 本轮错误/限流/中止，2 输入或读取失败，3 等待超时。超时返回原基线，便于继续等待，不杀进程、不重发。
+
+这三个命令不探测额度、不修改 CLI 数据、不把本次参数写进配置；当前只支持扫描范围内（最近 7 天）的主会话。第一版读整份转录校验游标，超大历史的读取性能尚未优化。
+
 ## 三大能力
 
-tide 只做三件事，三件都需要凭结构化字段，而不是错误文案或文件名：
+自动恢复的核心有三件事，判断使用结构化字段：
 
 1. **识别中断的会话**。扫描本机该 CLI 的会话记录，找出因额度上限而被停止的那一条。
    - Codex 认 `task_complete.error.codex_error_info`（`usage_limit_exceeded` / `rate_limit_exceeded`）。
@@ -18,7 +59,7 @@ tide 只做三件事，三件都需要凭结构化字段，而不是错误文案
    - 投递完就走，落在同一个 sessionId 上，不 fork。Codex 侧以”`queue` 进程退出码 0”为完成，Claude Code 侧以”终端窗口已请求启动”为完成；都不重定义失败，也不等模型整轮。
    - Codex 侧消息留在 CLI 自己的队列里，用户保持目标打开即可；Claude Code 侧 tide 自己开一个终端窗口把这个会话跑起来，不需要目标开着。
 
-当前收尾范围：**Windows Git Bash 中的 Codex CLI / Codex 桌面端 / Claude Code CLI**。用户保持目标 CLI 或桌面任务打开。tide 负责检查和投递：Claude Code 一侧在投递前会终止占用该 sessionId 的 claude 进程，投递后不持有它、不等任务完成，也不因整轮超时杀它。Claude Code 的窗口投递另写了 macOS 分支，在 Windows 上实测通过，macOS 上尚未跑过。
+当前范围：**Windows Git Bash 中的 Codex CLI / Codex 桌面端 / Claude Code CLI**。普通 `watch` / `resume` / `send` 的 Claude 窗口投递遇到占用就推迟，不接管别的进程；`tide claude` 包装入口只管理自己启动的前台进程。窗口投递另有未实测的 macOS 分支。
 
 ```bash
 npm install
@@ -37,7 +78,7 @@ node dist/tide.mjs watch --cli claude --session <id>
 
 `src/main.ts` 解析参数，`src/commands.ts` 执行命令并负责 adapter 的生命周期；`src/watch.ts` 集中处理筛选、额度检查与监控循环；`src/codex.ts`、`src/claude.ts` 分别读取会话并投递消息。构建仅输出 `dist/tide.mjs`。
 
-配置文件固定在 `<stateDir>/config.json`，`stateDir` 默认是 tide 安装目录下的 `.tide`，可通过 `TIDE_STATE_DIR` 环境变量覆盖。未指定的字段使用默认值。配置文件在 `watch` 每轮 sweep 前重新读取，运行中改配置即时生效，不用重启。命令行只覆盖它自己指定的字段——`--dry-run`、`--session-all` 这些不会被文件里没有的字段重置。
+配置文件固定在 `<stateDir>/config.json`，`stateDir` 默认是 tide 安装目录下的 `.tide`，可通过 `TIDE_STATE_DIR` 环境变量覆盖。未指定的字段使用默认值。当前进程启动时读取配置，修改后需要重新启动监控。旧命令的配置参数会持久化；新增的 `tail` / `send` / `wait` 和启动包装不持久化本次参数。
 
 `watch` 必须指定 `--session <id>` 或 `--session-all`，也可以在配置中设置 `sessionAllowList` / `sessionAll`。`sessionDenyList` 是按 session id 前缀排除的黑名单：命中的会话 watcher 既不 resume 也不显示，优先于 allow 列表。`tide status` 不过滤，把它们标成 `[excluded]`，方便确认规则命中得对不对。
 
@@ -48,7 +89,7 @@ npm run typecheck
 npm run build
 ```
 
-没有测试。改动后手工验证：`status` 看会话识别与额度，`resume --dry-run` 看定位与拒绝路径，投递本身只能靠一条真会话跑一次。
+`npm test` 构建并运行会话控制测试（游标、终态、忙碌拒绝、参数处理及 CLI 只读行为），不发送真实模型请求。投递、前台窗口和真实限流恢复仍需实机验证。
 
 ## 投递：Codex 自己的队列
 
@@ -79,11 +120,11 @@ cd '<session cwd>'
 - **窗口而不是无头进程**：窗口给了这个会话一个真 TTY，于是 `--resume` 起的是**常驻 TUI**——跑完这一轮不会退出，可以继续在里面说话。`--dangerously-skip-permissions` 是因为没人会去回答批准弹窗。
 - **平台**：Windows 用 `cmd /c start` 开新控制台、由 Git Bash 跑脚本（Git Bash 取 `CLAUDE_CODE_GIT_BASH_PATH`，其次 `where.exe bash` 并跳过 `WindowsApps` 里的 WSL 桩；都找不到就报错不投递）。macOS 用 `open -a Terminal`——用 `open` 而不是 `osascript`，是为了不触发自动化授权弹窗。其他平台没有窗口启动器，直接失败。
 - **投递窗口的环境**：带着发起 tide 的那个 Claude Code 会话的标记（`CLAUDECODE`、`CLAUDE_CODE_CHILD_SESSION`、`CLAUDE_CODE_SESSION_ID`、`CLAUDE_PID`、`CLAUDE_CODE_MESSAGING_SOCKET` 等）的 TUI 会认定自己是嵌套子会话，报 "transcript saving is off" 而一个记录都不写。Windows 上把这些标记从继承来的环境里剥掉再交给窗口；macOS 上窗口由 Terminal 自己启动，环境取自 Terminal，本来就不带它们。
-- **会话被前台占着时**：一个 sessionId 被活着的 claude 进程持有时，`--resume` **不分叉**——它打断那个进程正在跑的工具调用、接管会话，而持有者会继续活着、内存状态与转录分岔。所以投递前先跑 `claude agents --json`，取出持有该 sessionId 的 pid，用 `process.kill(pid)` 终止。只读 `sessionId` 与 `pid` 两个字段；`kind: "background"` 的条目没有 `pid`，因此不会被碰。**shell 进程不会被波及**——只杀 claude 自己。
+- **会话被占用时**：通过 Git Bash 运行 `claude agents --json`。匹配 sessionId 的交互进程（包括 idle）或后台条目都拒绝投递；列表读取失败也拒绝，不再调用 `process.kill` 接管。普通命令不会改变已有窗口。
 - **接管方会补中断记录**：无论先杀还是被接管，接上来的那个进程都会在转录里补 `[Request interrupted by user for tool use]` 和一对 `Continue from where you left off.` / `No response requested.`，然后才写自己的回合。转录因此总是从"被打断"这个尾巴续上。
 - **输出落点**：这一轮照样写进 `~/.claude/projects/` 的那条转录，用户下次 `claude --resume <id>` 就能看到。`.tide/deliveries/<session-id>.log` 只收启动器自己的输出，窗口里的内容不在里面——启动器正常不输出，所以这个文件一般是空的（追加写入，只留启动失败之类的痕迹）。
 - **窗口会攒下来**：每个投递周期留一个窗口（跑完那一轮后 TUI 停在那里等输入），tide 不关它。
-- **重复触发安全**：投递之后该 session 的 transcript 在 watcher 下一次 sweep 时要么已经有新 assistant 记录（不再算 `quota-limited`），要么 `lastAssistantAt` 刚被 mtime 刷到当前时间（被 `idleMinutesBeforeResume` 挡在外面）。两种情况下 watcher 都不会再触发同一个 sessionId。
+- **重复触发**：新输入会覆盖旧限流，已有持有者会阻止再次打开窗口。窗口启动与持有者登记并非原子操作；普通投递不保证并发幂等，不应并发投递或在结果不明时盲目重试。
 
 `tide resume --cli claude` 的 `ok: true` 是窗口已经请求启动，**不是任务做完**。
 

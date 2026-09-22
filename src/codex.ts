@@ -71,7 +71,7 @@ function normWindow(w: RateLimitWindow | null | undefined): WindowInfo | null {
   return { usedPercent: used, resetsAt: windowReset(w) };
 }
 
-async function askAppServer<T>(bin: string, method: string, params: unknown): Promise<T> {
+export async function askAppServer<T>(bin: string, method: string, params: unknown, persistLaunch = false): Promise<T> {
   const child = spawn(bin, ["app-server"], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -167,13 +167,20 @@ async function askAppServer<T>(bin: string, method: string, params: unknown): Pr
     });
     // Required by the protocol before any real call.
     child.stdin?.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} })}\n`);
-    return (await request(2, method, params)) as T;
+    const result = await request(2, method, params);
+    if (persistLaunch) {
+      const threadId = (result as { thread: { id: string } }).thread.id;
+      // Empty threads are not persisted. A short developer note materializes the native
+      // transcript through Codex itself, without running a model or writing CLI data ourselves.
+      await request(3, "thread/inject_items", { threadId, items: [{ type: "message", role: "developer", content: [{ type: "input_text", text: "This session was opened by Tide, which monitors quota interruptions while the foreground CLI is open." }] }] });
+    }
+    return result as T;
   } finally {
     try { child.kill(); } catch {}
   }
 }
 
-export function resolveCodexBin(explicit?: string): string | null {
+export function resolveCodexBin(explicit?: string, preferPath = false): string | null {
   const candidates: string[] = [];
 
   if (explicit) {
@@ -185,7 +192,7 @@ export function resolveCodexBin(explicit?: string): string | null {
   }
 
   const fromConfig = readCodexCliPathFromConfig();
-  if (fromConfig) {
+  if (fromConfig && !preferPath) {
     candidates.push(fromConfig);
   }
 
@@ -207,7 +214,7 @@ export function resolveCodexBin(explicit?: string): string | null {
       }
     }
   }
-  return null;
+  return preferPath && fromConfig && isUsable(fromConfig) ? fromConfig : null;
 }
 
 function isUsable(path: string): boolean {
@@ -323,7 +330,7 @@ export class CodexAdapter implements Adapter {
       }
     }
 
-    const byThread = new Map<string, { state: ThreadState; mtimeMs: number }>();
+    const byThread = new Map<string, { state: ThreadState; mtimeMs: number; path: string }>();
     for (const { path, mtimeMs } of files) {
       const parsed = parseRollout(path);
       if (!parsed) {
@@ -331,13 +338,14 @@ export class CodexAdapter implements Adapter {
       }
       const previous = byThread.get(parsed.sessionId);
       if (!previous || parsed.at > previous.state.at) {
-        byThread.set(parsed.sessionId, { state: parsed, mtimeMs });
+        byThread.set(parsed.sessionId, { state: parsed, mtimeMs, path });
       }
     }
 
     return [...byThread.values()]
-      .map(({ state: s, mtimeMs }) => ({
+      .map(({ state: s, mtimeMs, path }) => ({
         sessionId: s.sessionId,
+        transcriptPath: path,
         cwd: s.cwd,
         lastAssistantAt: s.lastAssistantAt ?? mtimeMs,
         source: s.source,

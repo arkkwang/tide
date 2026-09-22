@@ -1,9 +1,16 @@
 import { commandDenyCurrent, commandDoctor, commandResume, commandStatus, startWatch } from "./commands.js";
 import { Config, MAX_SESSIONS_RETURNED } from "./config.js";
+import { commandControl } from "./control.js";
+import { foreground, launchThroughBash, wrapperInvocation } from "./launch.js";
 
 const USAGE = `tide — resume Codex / Claude Code sessions after a quota limit resets
 
 Usage:
+  tide claude [CLI args...]                         Run Claude here and watch this session
+  tide codex [CLI args...]                          Run Codex here and watch this session
+  tide tail <session-id> --cli <kind> [--limit N] [--after cursor] [--json]
+  tide send <session-id> --cli <kind> (--message text | --message-file path) [--dry-run] [--json]
+  tide wait <session-id> --cli <kind> --after cursor [--timeout seconds] [--json]
   tide status [--cli <kind>] [--json] [--limit <n>]   Account state, and what is waiting to resume
   tide resume <session-id> [--cli <kind>] [--json]   Send one turn to one session, right now
   tide watch                                        Watch and resume until you stop it (Ctrl-C)
@@ -11,6 +18,10 @@ Usage:
   tide deny-current [--cli <kind>]                  Add every currently quota-limited session to sessionDenyList
 
 Options:
+  --after <cursor>  Read/wait after a cursor returned by tail or send
+  --message <text>  Send literal text, without changing the configured resume prompt
+  --message-file <path>  Read the message from a UTF-8 file
+  --timeout <seconds>  Bounded wait (default 60); timeout never stops the session
   --cli <kind>      Only this CLI: codex, claude
   --dry-run         Say what would happen without resuming anything
   --skip-quota-check  Skip the quota probe and resume any waiting session. Test/debug only.
@@ -26,6 +37,10 @@ interface Flags {
   positional: string[];
   cli?: string;
   limit?: number;
+  after?: string;
+  message?: string;
+  messageFile?: string;
+  timeout?: number;
   /** Config-mergeable. Absent means "don't override config". */
   dryRun?: boolean;
   skipQuotaCheck?: boolean;
@@ -42,7 +57,7 @@ function parseArgs(argv: string[]): Flags {
     parseErrors: [],
     json: false,
   };
-  const takesValue = ["--cli", "--session", "--limit"];
+  const takesValue = ["--cli", "--session", "--limit", "--after", "--message", "--message-file", "--timeout"];
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "-h" || arg === "--help") {
@@ -51,11 +66,21 @@ function parseArgs(argv: string[]): Flags {
     }
     if (takesValue.includes(arg)) {
       const value = argv[++i];
-      if (value === undefined) {
+      if (value === undefined || (value.startsWith("--") && arg !== "--message")) {
         flags.parseErrors.push(`${arg} needs a value`);
         continue;
       }
-      if (arg === "--cli") {
+      if (arg === "--message") {
+        flags.message = value;
+      } else if (arg === "--message-file") {
+        flags.messageFile = value;
+      } else if (arg === "--after") {
+        flags.after = value;
+      } else if (arg === "--timeout") {
+        const n = Number(value);
+        if (!value.trim() || !Number.isFinite(n) || n < 0) flags.parseErrors.push("--timeout needs nonnegative seconds");
+        else flags.timeout = n;
+      } else if (arg === "--cli") {
         flags.cli = value;
       } else if (arg === "--session") {
         (flags.sessionAllowList ??= []).push(value);
@@ -99,6 +124,14 @@ function applyFlags(config: Config, flags: Flags): Config {
 }
 
 async function main(): Promise<number> {
+  const argv = process.argv.slice(2);
+  const wrapper = wrapperInvocation(argv);
+  if (wrapper) return launchThroughBash(wrapper.cli, wrapper.args);
+  if (argv[0] === "__foreground") {
+    const inner = wrapperInvocation(argv.slice(1));
+    if (!inner) throw new Error("Invalid foreground CLI");
+    return foreground(inner.cli, inner.args);
+  }
   const flags = parseArgs(process.argv.slice(2));
   if (flags.command === "help") {
     console.log(USAGE);
@@ -111,6 +144,20 @@ async function main(): Promise<number> {
   }
 
   let config: Config;
+  if (["tail", "send", "wait"].includes(flags.command)) {
+    const allowed: Record<string, string[]> = {
+      tail: ["--cli", "--limit", "--after", "--json"],
+      send: ["--cli", "--message", "--message-file", "--dry-run", "--json"],
+      wait: ["--cli", "--after", "--timeout", "--json"],
+    };
+    const used: Record<string, unknown> = { "--limit": flags.limit, "--after": flags.after, "--message": flags.message, "--message-file": flags.messageFile, "--timeout": flags.timeout, "--dry-run": flags.dryRun, "--skip-quota-check": flags.skipQuotaCheck, "--session-all": flags.sessionAll, "--session": flags.sessionAllowList };
+    const invalid = Object.entries(used).find(([key, value]) => value !== undefined && !allowed[flags.command]!.includes(key));
+    if (flags.positional.length !== 1 || invalid) {
+      console.error(invalid ? `${invalid[0]} is not supported by ${flags.command}` : `${flags.command} requires exactly one session ID`);
+      return 2;
+    }
+    return commandControl(Config.fromFile(false), { ...flags, id: flags.positional[0]! });
+  }
   try {
     config = applyFlags(Config.fromFile(), flags);
   } catch (err) {

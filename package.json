@@ -8,6 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "test": "npm run build && node --import tsx --test tests/control.test.ts",
     "build": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/tide.mjs --banner:js=\"#!/usr/bin/env node\"",
     "dev": "tsx src/main.ts",
     "typecheck": "tsc --noEmit"
