@@ -66,5 +66,6 @@ export class Sessions {
 export async function locateSessions(systems: Sessions[], id: string) {
   const matches: Array<{ adapter: Sessions; session: Session }> = [];
   for (const adapter of systems) for (const session of await adapter.find(id)) matches.push({ adapter, session });
-  return matches;
+  const exact = matches.filter((m) => m.session.sessionId === id);
+  return exact.length ? exact : matches;
 }

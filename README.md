@@ -12,7 +12,7 @@
 | 找会话、查看监控情况 | `tide status --cli claude` | 会话列表、最后历史事件、监控状态，不调用模型 |
 | 看最近执行内容 | `tide snapshot <id> --cli claude` | 最近用户/助手文本及历史事件，不是实时执行保证 |
 | 纳入已有会话 | `tide watch --session <id> --cli claude` | 登记持续监控与限流后自动恢复，完成登记后返回 |
-| 取消自动恢复 | `tide unwatch <完整id> --cli claude` | 取消监控，CLI 继续运行 |
+| 取消自动恢复 | `tide unwatch <id> --cli claude` | 取消监控，CLI 继续运行 |
 | 手动续跑 | `tide resume <id> --cli claude` | 使用配置中的续跑提示；Claude 请求恢复窗口，Codex 排队 |
 
 例如，先运行 `tide claude`；另一个终端执行 `tide status --cli claude` 找到完整 ID，再用 `snapshot` 查看文本。结束后如果不希望 Tide 再自动恢复这个会话，执行 `unwatch`；关闭原生终端本身不会取消监控。需要立即停止当前执行时，使用原生 CLI 自己的交互；目前没有可跨 CLI 保证成功的 Tide 回合打断命令。
@@ -56,11 +56,11 @@ Claude 按启动进程 PID 从原生 `agents --json` 绑定会话；在绑定成
 ```bash
 tide watch --cli claude --session <id>
 tide watch --cli codex --session-all
-tide unwatch <完整会话 ID> --cli claude
+tide unwatch <id> --cli claude
 tide unwatch --session-all --cli codex
 ```
 
-普通 `watch` 完成后台监控登记后返回。`--session-all` 使用一个后台 watcher 持续扫描，不为每条历史记录创建进程。单会话监控支持无歧义 ID 前缀；`unwatch` 要求完整 ID。
+普通 `watch` 完成后台监控登记后返回。`--session-all` 使用一个后台 watcher 持续扫描，不为每条历史记录创建进程。单会话操作（watch/unwatch/resume/send/snapshot/tail/wait）支持无歧义 ID 前缀，完整 ID 精确匹配优先。多个匹配会列出候选并拒绝操作；没有匹配会提示通过 status 查找。unwatch 同时查找近期历史和已有监控登记，历史过期后仍可取消；重复取消同一登记安全。
 
 `unwatch` 取消自动监控，不终止 CLI 或当前回合。单会话取消也阻止全会话 watcher 自动恢复该会话；`--session-all` 取消该 CLI 的全会话及已登记的单会话监控。后续明确重新登记会话会重新启用它。
 
@@ -178,7 +178,7 @@ npm run typecheck
 npm test
 ```
 
-测试包含发送与启动隔离、打断不退化成入队、自有进程停止、只读监控取消、状态/快照一致性、参数只读、监控接续与重新登记、并发恢复、未知回执及原有会话控制行为，不发送真实模型请求。已配置 Windows/macOS GitHub Actions 测试矩阵，尚未在远端运行。Windows 本机 34 项测试中 33 项通过，忽略 SIGTERM 的 POSIX 专用测试跳过。macOS 原生终端交互、真实额度耗尽后的恢复和正式提供方的完整 Codex 模型回合仍需实机验证。
+测试包含发送与启动隔离、打断不退化成入队、自有进程停止、只读监控取消、状态/快照一致性、参数只读、监控接续与重新登记、并发恢复、未知回执及原有会话控制行为，不发送真实模型请求。已配置 Windows/macOS GitHub Actions 测试矩阵，尚未在远端运行。Windows 本机 35 项测试中 34 项通过，忽略 SIGTERM 的 POSIX 专用测试跳过。macOS 原生终端交互、真实额度耗尽后的恢复和正式提供方的完整 Codex 模型回合仍需实机验证。
 
 ## 项目记录
 

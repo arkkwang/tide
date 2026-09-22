@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Execution } from "../src/core/process.ts";
-import { Sessions } from "../src/core/sessions.ts";
+import { Sessions, locateSessions } from "../src/core/sessions.ts";
 import type { Adapter, Session } from "../src/core/session.ts";
 import { resumeSession } from "../src/features/resume.ts";
 import { supervisorCommand } from "../src/providers/terminal.ts";
@@ -27,6 +27,15 @@ function provider(): Adapter {
     snapshot: () => { throw new Error("unused snapshot"); },
     history: () => { throw new Error("unused history"); } };
 }
+
+test("session selection prefers an exact ID and preserves ambiguous prefixes", async () => {
+  const p = provider();
+  p.findSessions = async () => [session, { ...session, sessionId: "test-longer" }];
+  const systems = [new Sessions(p)];
+  assert.deepEqual((await locateSessions(systems, "test")).map((m) => m.session.sessionId), ["test"]);
+  assert.equal((await locateSessions(systems, "tes")).length, 2);
+  assert.equal((await locateSessions(systems, "missing")).length, 0);
+});
 
 test("sending never implicitly launches; explicit resume reports launch separately from delivery", async () => {
   const p = provider();

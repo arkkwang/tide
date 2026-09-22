@@ -23,6 +23,15 @@ function paths(config: Config, cli: CliKind, id: string) {
 export function monitorEnabled(config: Config, cli: CliKind, id: string): boolean {
   return !existsSync(paths(config, cli, id).stop);
 }
+export function registeredSessionIds(config: Config, cli: CliKind): string[] {
+  const dir = join(config.stateDir, "monitors");
+  if (!existsSync(dir)) return [];
+  return [...new Set(readdirSync(dir).flatMap((name) => {
+    if (!name.startsWith(`${cli}-`)) return [];
+    const id = name.slice(cli.length + 1).replace(/\.(json|stop)$/, "");
+    return id !== "__all__" && /^[a-zA-Z0-9_-]+$/.test(id) && /\.(json|stop)$/.test(name) ? [id] : [];
+  }))];
+}
 export function monitorState(config: Config, cli: CliKind, id: string) {
   const p = paths(config, cli, id);
   if (!existsSync(p.state)) return { phase: "unregistered", enabled: false };

@@ -53,7 +53,9 @@ export async function commandControl(config: Config, options: ControlOptions): P
     const { adapters, problems } = buildAdapters(config, options.cli);
     if (problems.length) throw new Error(problems.join("; "));
     const matches = await locateSessions(adapters, options.id);
-    if (matches.length !== 1) throw new Error(matches.length ? "Ambiguous session ID; use the full ID" : "Session not found in recent transcripts");
+    if (matches.length !== 1) throw new Error(matches.length
+      ? `Ambiguous session ID "${options.id}"; use more of the ID: ${matches.map((m) => m.session.sessionId).join(", ")}`
+      : `No session matching "${options.id}" in recent history. Use tide status --cli ${options.cli} to find an ID.`);
     const { adapter, session } = matches[0]!;
     const identity = { cli: adapter.kind, sessionId: session.sessionId };
     if (options.command === "snapshot") {

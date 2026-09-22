@@ -1,10 +1,10 @@
-import { commandDenyCurrent, commandDoctor, commandQuota, commandResume, commandStatus, startWatch } from "./commands.js";
+import { commandDenyCurrent, commandDoctor, commandQuota, commandResume, commandStatus, commandUnwatch, startWatch } from "./commands.js";
 import { Config, MAX_SESSIONS_RETURNED } from "../config.js";
 import { commandControl } from "./control.js";
 import { foreground, launchNative, wrapperInvocation } from "../features/foreground.js";
-import { monitorWorker, stopMonitor } from "../features/monitor.js";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { monitorWorker } from "../features/monitor.js";
+
+
 
 const USAGE = `tide — native CLI sessions with automatic quota recovery
 
@@ -18,7 +18,7 @@ Inspect:
 
 Manage recovery:
   tide watch [--cli <kind>] (--session <id> | --session-all)
-  tide unwatch --cli <kind> (<full-id> | --session-all) [--json]
+  tide unwatch --cli <kind> (<id> | --session-all) [--json]
   tide resume <id> [--cli <kind>] [--dry-run] [--json]
 
 Script collaboration:
@@ -33,6 +33,7 @@ Diagnostics and configuration:
 
 Behavior:
   <kind> is claude or codex. Use status to find IDs.
+  Session IDs accept unique prefixes; exact matches take priority.
   status is read-only; lastEvent is historical, not live process state.
   snapshot shows recent text; tail/wait provide incremental script observation.
   watch enables automatic recovery and persists after this terminal closes.
@@ -248,22 +249,8 @@ async function main(): Promise<number> {
         return 2;
       }
       return await startWatch(config, flags.cli);
-    case "unwatch": {
-      const cli = flags.cli as "claude" | "codex";
-      const id = flags.sessionAll ? "__all__" : flags.positional[0]!;
-      // UUIDs can also be excluded from a wildcard monitor without individual registration.
-      // Other IDs (including subagents) must match an existing registration exactly.
-      if (!flags.sessionAll && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) &&
-          !(id !== "__all__" && /^[a-zA-Z0-9_-]+$/.test(id) && existsSync(join(config.stateDir, "monitors", `${cli}-${id}.json`)))) {
-        const detail = "unwatch requires a full session UUID or an exact registered ID; prefixes are not supported. Use tide status to find the ID.";
-        if (flags.json) console.log(JSON.stringify({ ok: false, detail }));
-        else console.error(detail);
-        return 2;
-      }
-      stopMonitor(config, cli, id);
-      console.log(flags.json ? JSON.stringify({ cli, sessionId: id, monitoring: false }) : `Monitoring cancelled for ${cli}/${id === "__all__" ? "all sessions" : id}. CLI processes are unchanged.`);
-      return 0;
-    }
+    case "unwatch":
+      return commandUnwatch(config, flags.cli as "claude" | "codex", flags.positional[0] ?? "", flags.sessionAll ?? false, flags.json);
     case "deny-current":
       return await commandDenyCurrent(config, flags.cli);
     default:

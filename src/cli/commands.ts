@@ -2,14 +2,39 @@ import { Sessions, locateSessions } from "../core/sessions.js";
 import { resumeSession } from "../features/resume.js";
 import { buildAdapters } from "../providers/index.js";
 import type { QuotaInfo, Session } from "../core/session.js";
-import { ensureMonitor, monitorEnabled, monitorState } from "../features/monitor.js";
+import { ensureMonitor, monitorEnabled, monitorState, registeredSessionIds, stopMonitor } from "../features/monitor.js";
 import { resolveCodexBin } from "../providers/codex.js";
 import { resolveClaudeBin } from "../providers/claude/adapter.js";
 import {
   Watcher,
   capWithMainReserve,
 } from "../features/watch.js";
-import { type Config, MAX_SESSIONS_RETURNED } from "../config.js";
+import { type Config, type CliKind, MAX_SESSIONS_RETURNED } from "../config.js";
+
+export async function commandUnwatch(config: Config, cli: CliKind, prefix: string, all: boolean, json: boolean): Promise<number> {
+  let id = "__all__";
+  if (!all) {
+    const ids = new Set(registeredSessionIds(config, cli));
+    // Exact local registrations remain cancellable even if the CLI is unavailable.
+    if (!ids.has(prefix)) {
+      const { adapters } = buildAdapters(config, cli);
+      for (const adapter of adapters) for (const session of await adapter.list()) ids.add(session.sessionId);
+    }
+    const matches = !prefix ? [] : ids.has(prefix) ? [prefix] : [...ids].filter((s) => s.startsWith(prefix)).sort();
+    if (matches.length !== 1) {
+      const detail = matches.length
+        ? `Ambiguous session ID "${prefix}"; use more of the ID: ${matches.join(", ")}`
+        : `No session matching "${prefix}" in recent history or monitor registrations. Use tide status --cli ${cli} to find an ID.`;
+      if (json) console.log(JSON.stringify({ ok: false, detail, candidates: matches }));
+      else console.error(detail);
+      return 2;
+    }
+    id = matches[0]!;
+  }
+  stopMonitor(config, cli, id);
+  console.log(json ? JSON.stringify({ cli, sessionId: id, monitoring: false }) : `Monitoring cancelled for ${cli}/${all ? "all sessions" : id}. CLI processes are unchanged.`);
+  return 0;
+}
 
 export async function commandStatus(config: Config, cli: string | undefined, json: boolean, limit: number | undefined): Promise<number> {
   const { adapters, problems } = buildAdapters(config, cli);
@@ -81,7 +106,7 @@ export async function commandResume(
   if (matches.length === 0) {
     return refuse(
       `no session matching "${id}" — tide status shows the current list.`,
-      1,
+      2,
     );
   }
   if (matches.length > 1) {
@@ -221,7 +246,10 @@ export async function startWatch(
       const targets: Array<{ adapter: Sessions; session: Session }> = [];
       for (const id of config.sessionAllowList) {
         const matches = await locateSessions(adapters, id);
-        if (matches.length !== 1) throw new Error(`Session ${id} is missing or ambiguous`);
+        if (matches.length !== 1) {
+          console.error(matches.length ? `Ambiguous session ID "${id}"; use more of the ID: ${matches.map((m) => `${m.adapter.kind}/${m.session.sessionId}`).join(", ")}` : `No session matching "${id}". Use tide status to find an ID.`);
+          return 2;
+        }
         targets.push(matches[0]!);
       }
       for (const { adapter, session } of targets) await ensureMonitor(config, adapter.kind, session.sessionId);

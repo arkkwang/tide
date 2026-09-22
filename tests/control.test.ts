@@ -223,7 +223,6 @@ test("CLI tail and wait do not probe quota or persist invocation flags", (t) => 
     ["deny-current", "--dry-run"],
     ["resume", id, "extra"],
     ["unwatch", id, "--cli", "codex", "--dry-run"],
-    ["unwatch", id.slice(0, 8), "--cli", "codex"],
     ["watch", "--session", id, "--session-all"],
     ["status", "--message", "ignored"],
     ["quota", "--cli", "typo"],
@@ -234,6 +233,37 @@ test("CLI tail and wait do not probe quota or persist invocation flags", (t) => 
     const plainRejected = run(args);
     assert.equal(plainRejected.status, 2, plainRejected.stdout + plainRejected.stderr);
     assert.match(plainRejected.stderr, /not supported|exactly one|cannot be combined|must be/);
+  }
+  for (const args of [
+    ["snapshot"], ["tail"], ["send", "--message", "task", "--dry-run"],
+    ["resume", "--dry-run"], ["wait", "--after", parsed.cursor, "--timeout", "0"],
+    ["unwatch"],
+  ]) {
+    const [command, ...options] = args;
+    const selected = run([command!, id.slice(0, 8), "--cli", "codex", ...options, "--json"]);
+    assert.equal(selected.status, command === "wait" ? 3 : 0, selected.stdout + selected.stderr);
+    assert.equal(JSON.parse(selected.stdout).sessionId, id);
+  }
+  const secondId = "aaaaaaab-bbbb-cccc-dddd-eeeeeeeeeeee";
+  writeFileSync(join(home, "sessions", "second.jsonl"), [
+    { type: "session_meta", payload: { id: secondId, cwd: s.cwd } }, codex("task_complete"),
+  ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+  for (const [command, ...options] of [
+    ["snapshot"], ["tail"], ["send", "--message", "task", "--dry-run"],
+    ["resume", "--dry-run"], ["wait", "--after", parsed.cursor, "--timeout", "0"], ["unwatch"],
+  ]) {
+    for (const prefix of ["aaaa", "does-not-exist"]) {
+      const rejected = run([command!, prefix, "--cli", "codex", ...options, "--json"]);
+      assert.equal(rejected.status, 2, rejected.stdout + rejected.stderr);
+      const detail = JSON.parse(rejected.stdout).detail;
+      if (prefix === "aaaa") { assert.ok(detail.includes(id)); assert.ok(detail.includes(secondId)); }
+      else assert.match(detail, /tide status/);
+    }
+  }
+  for (const prefix of ["aaaa", "does-not-exist"]) {
+    const rejected = run(["watch", "--session", prefix, "--cli", "codex"]);
+    assert.equal(rejected.status, 2, rejected.stdout + rejected.stderr);
+    assert.match(rejected.stderr, prefix === "aaaa" ? /aaaaaaab/ : /tide status/);
   }
   assert.equal(readFileSync(join(state, "config.json"), "utf8"), config);
 });

@@ -33,7 +33,12 @@ test("detached monitor takes over when its foreground owner exits, and unwatch s
   parent.kill();
   await until(() => monitorState(config, "codex", "test-session").phase === "watching");
   assert.equal(worker.exitCode, null);
-  stopMonitor(config, "codex", "test-session");
+  const cancelled = spawnSync(process.execPath, ["dist/tide.mjs", "unwatch", "test-s", "--cli", "codex", "--json"], {
+    env: { ...process.env, TIDE_STATE_DIR: dir, CODEX_HOME: join(dir, "empty-home"), CODEX_BIN: process.execPath },
+    encoding: "utf8", windowsHide: true, timeout: 10000,
+  });
+  assert.equal(cancelled.status, 0, cancelled.stderr + cancelled.stdout);
+  assert.equal(JSON.parse(cancelled.stdout).sessionId, "test-session");
   await until(() => worker.exitCode !== null);
   assert.equal(worker.exitCode, 0);
   assert.equal(monitorState(config, "codex", "test-session").phase, "stopped");
