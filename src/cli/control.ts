@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
-import type { Config } from "./config.js";
-import { buildAdapters, locateSessions } from "./commands.js";
-import { readTranscript, tailTranscript, textHash, waitForTurn } from "./transcript.js";
+import type { Config } from "../config.js";
+import { buildAdapters } from "../providers/index.js";
+import { locateSessions } from "../core/sessions.js";
+import { tailTranscript, textHash, waitForTurn } from "../features/conversation.js";
 
 export interface ControlOptions {
   command: string;
@@ -12,6 +13,7 @@ export interface ControlOptions {
   timeout?: number;
   message?: string;
   messageFile?: string;
+  mode?: "queue" | "interrupt";
   dryRun?: boolean;
   json: boolean;
 }
@@ -43,22 +45,24 @@ export async function commandControl(config: Config, options: ControlOptions): P
     if (matches.length !== 1) throw new Error(matches.length ? "Ambiguous session ID; use the full ID" : "Session not found in recent transcripts");
     const { adapter, session } = matches[0]!;
     const identity = { cli: adapter.kind, sessionId: session.sessionId };
+    if (options.command === "snapshot") {
+      print({ ok: true, ...adapter.snapshot(session, options.limit ?? 10) });
+      return 0;
+    }
     if (options.command === "tail") {
-      print({ ok: true, ...identity, ...tailTranscript(adapter.kind, session, options.limit ?? 10, options.after) });
+      print({ ok: true, ...identity, ...tailTranscript(adapter, session, options.limit ?? 10, options.after) });
       return 0;
     }
     if (options.command === "wait") {
-      const result = await waitForTurn(adapter.kind, session, options.after!, options.timeout ?? 60);
+      const result = await waitForTurn(adapter, session, options.after!, options.timeout ?? 60);
       print({ ...identity, ...result });
       return result.ok ? 0 : result.status === "timed-out" ? 3 : 1;
     }
-    const snapshot = readTranscript(adapter.kind, session);
+    const snapshot = adapter.history(session);
     const cursor = snapshot.cursor(undefined, textHash(message!));
-    const result = options.dryRun
-      ? { ok: true, delivered: false, via: "dry-run", detail: "No message sent or window opened" }
-      : await adapter.resume(session, message!);
+    const result = await adapter.send(session, message!, options.mode, options.dryRun);
     print({ ...identity, ...result, cursor,
-      stage: !result.delivered ? "not-confirmed" : adapter.kind === "codex" ? "queued" : "window-requested" });
+      stage: result.delivered ? "queued" : "not-confirmed" });
     return result.ok ? 0 : 1;
   } catch (error) {
     print({ ok: false, detail: (error as Error).message });

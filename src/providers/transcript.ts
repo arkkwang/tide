@@ -1,20 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { CliKind } from "./config.js";
-import type { Session } from "./watch.js";
+import type { CliKind } from "../config.js";
+import type { Session, ExecutionSnapshot, TranscriptEvent } from "../core/session.js";
 
 type Row = Record<string, any>;
-export interface TranscriptMessage {
-  role: "user" | "assistant";
-  text: string;
-  timestamp: string | null;
-}
-export interface TranscriptEvent {
-  offset: number;
-  message?: TranscriptMessage;
-  outcome?: "completed" | "errored" | "quota-limited" | "aborted";
-  evidence?: string;
-}
 interface Cursor {
   v: 1;
   cli: CliKind;
@@ -24,7 +13,6 @@ interface Cursor {
   expected?: string;
 }
 
-export const textHash = (text: string): string => createHash("sha256").update(text).digest("hex");
 const digest = (data: Buffer, offset: number): string => createHash("sha256").update(data.subarray(0, offset)).digest("hex");
 const encode = (cursor: Cursor): string => Buffer.from(JSON.stringify(cursor)).toString("base64url");
 
@@ -56,6 +44,7 @@ export function parseEvent(cli: CliKind, row: Row, offset: number): TranscriptEv
     if (row.type === "user" && !row.isMeta) message("user", row.message?.content);
     if (row.type === "assistant") {
       message("assistant", row.message?.content);
+      if (row.message?.stop_reason === "tool_use" || row.message?.content?.some?.((p: Row) => p.type === "tool_use")) event.state = "running";
       if (row.isApiErrorMessage === true) {
         event.outcome = row.error === "rate_limit" ? "quota-limited" : "errored";
         event.evidence = "assistant.isApiErrorMessage";
@@ -69,6 +58,7 @@ export function parseEvent(cli: CliKind, row: Row, offset: number): TranscriptEv
     }
   } else if (row.type === "event_msg") {
     const p = row.payload ?? {};
+    if (p.type === "task_started" || p.type === "item_completed" && p.item?.type === "FunctionCall") event.state = "running";
     if (p.type === "item_completed") {
       if (p.item?.type === "UserMessage") message("user", p.item.content);
       if (p.item?.type === "AssistantMessage") message("assistant", p.item.content ?? p.item.text);
@@ -85,7 +75,17 @@ export function parseEvent(cli: CliKind, row: Row, offset: number): TranscriptEv
       event.evidence = "event_msg.turn_aborted";
     }
   }
+  if (event.message?.role === "user") event.state = "running";
+  if (event.outcome) event.state = event.outcome;
   return event;
+}
+
+export function executionSnapshot(cli: CliKind, session: Session, limit = 10): ExecutionSnapshot {
+  const snapshot = readTranscript(cli, session);
+  const lastEvent = snapshot.events.filter((e) => e.state).at(-1)?.state ?? "unknown";
+  const messages = snapshot.events.flatMap((e) => e.message ? [e.message] : []);
+  return { sessionId: session.sessionId, cli, cwd: session.cwd, observedAt: new Date().toISOString(),
+    currentState: "unknown", lastEvent, messages: messages.slice(-limit), truncated: messages.length > limit };
 }
 
 export function readTranscript(cli: CliKind, session: Session, after?: string) {
@@ -123,43 +123,4 @@ export function readTranscript(cli: CliKind, session: Session, after?: string) {
     ...(expected ? { expected } : {}),
   });
   return { events, cursor, expected: baseline?.expected };
-}
-
-export function tailTranscript(cli: CliKind, session: Session, limit: number, after?: string) {
-  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("limit must be a positive integer");
-  const snapshot = readTranscript(cli, session, after);
-  const messages = snapshot.events.filter((e) => e.message);
-  const selected = after === undefined ? messages.slice(-limit) : messages.slice(0, limit);
-  const hasMore = after !== undefined && messages.length > selected.length;
-  const cursor = snapshot.cursor(hasMore ? selected.at(-1)!.offset : undefined, null);
-  return { messages: selected.map((e) => e.message!), cursor, hasMore };
-}
-
-const WAIT_POLL_MS = 1000;
-export async function waitForTurn(cli: CliKind, session: Session, after: string, timeoutSeconds: number) {
-  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0) throw new Error("timeout must be a nonnegative number of seconds");
-  const deadline = Date.now() + timeoutSeconds * 1000;
-  let cursor = after;
-  let matching = false;
-  let lastText = "";
-  for (;;) {
-    const snapshot = readTranscript(cli, session, cursor);
-    if (!snapshot.expected) matching = true;
-    for (const event of snapshot.events) {
-      if (event.message?.role === "user") {
-        if (snapshot.expected && textHash(event.message.text) === snapshot.expected) matching = true;
-        if (matching) lastText = "";
-      }
-      if (matching && event.message?.role === "assistant") lastText = event.message.text;
-      if (matching && event.outcome) {
-        return { ok: event.outcome === "completed", status: event.outcome, evidence: event.evidence, text: lastText, cursor: snapshot.cursor(event.offset, null) };
-      }
-    }
-    cursor = snapshot.cursor();
-    if (Date.now() >= deadline) {
-      // Preserve the original baseline so a later wait can reconstruct the same turn.
-      return { ok: false, status: "timed-out", evidence: "No matching terminal event observed; outcome unknown", text: lastText, cursor: after };
-    }
-    await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_POLL_MS, deadline - Date.now())));
-  }
 }

@@ -1,3 +1,4 @@
+import { executionSnapshot, readTranscript, parseEvent } from "./transcript.js";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -6,6 +7,7 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
+  readFileSync,
   readSync,
   statSync,
   writeFileSync,
@@ -15,19 +17,19 @@ import { join } from "node:path";
 import {
   SCAN_MTIME_CUTOFF_MS,
   type Config,
-} from "./config.js";
-import { messageText, oneLine, runChildProcess, short } from "./util.js";
-import { launchWindow, posixQuote, resolveBash } from "./window.js";
+} from "../config.js";
+import { messageText, oneLine, runChildProcess, short } from "../util.js";
+import { claudeRecoveryArgs, launchWindow, posixQuote, resolveBash } from "./terminal.js";
 import {
   SPOKEN_CHARS,
   SPOKEN_COUNT,
   type Adapter,
   type QuotaInfo,
-  type ResumeResult,
+  type LaunchReceipt,
   type Session,
-  type SessionStatus,
+  type RecordedEvent,
   type Utterance,
-} from "./watch.js";
+} from "../core/session.js";
 
 function claudeConfigDir(): string {
   return process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude");
@@ -88,7 +90,6 @@ export function deliveryEnv(): NodeJS.ProcessEnv {
 }
 
 /** The `error` value Claude Code writes on a rate-limited API-error record. */
-const QUOTA_ERROR_TAG = "rate_limit";
 
 /** `agents --json` lists local processes; anything slower than this is not going to answer. */
 const AGENTS_LIST_TIMEOUT_MS = 5_000;
@@ -113,6 +114,31 @@ export class ClaudeAdapter implements Adapter {
     private readonly bin: string,
     private readonly config: Config,
   ) {}
+
+  history(session: Session, after?: string) { return readTranscript(this.kind, session, after); }
+
+  snapshot(session: Session, limit: number) { return executionSnapshot(this.kind, session, limit); }
+
+  private async processes(): Promise<Array<{ pid: number; sessionId: string; status: string }>> {
+    const bash = resolveBash();
+    if (!bash) throw new Error("No Git Bash found");
+    const result = await runChildProcess(bash, ["-lc", `${posixQuote(this.bin.replaceAll("\\", "/"))} agents --json`], {
+      timeoutMs: AGENTS_LIST_TIMEOUT_MS, env: deliveryEnv(),
+    });
+    if (result.code !== 0 || result.timedOut || result.spawnError) throw new Error("Cannot confirm Claude process ownership");
+    const rows = JSON.parse(result.out);
+    if (!Array.isArray(rows) || rows.some((r) => !r || typeof r.sessionId !== "string" || !Number.isSafeInteger(r.pid))) throw new Error("Invalid Claude process list");
+    return rows;
+  }
+
+  async sessionForProcess(pid: number): Promise<string | null> {
+    return (await this.processes()).find((r) => r.pid === pid)?.sessionId ?? null;
+  }
+
+  async ownsIdleProcess(sessionId: string, pid: number): Promise<boolean> {
+    const owners = (await this.processes()).filter((r) => r.sessionId === sessionId);
+    return owners.length === 1 && owners[0]!.pid === pid && owners[0]!.status === "idle";
+  }
 
   resolveBin(): string {
     return this.bin;
@@ -220,33 +246,36 @@ export class ClaudeAdapter implements Adapter {
     return found.sort((a, b) => b.lastAssistantAt - a.lastAssistantAt);
   }
 
-  async resume(session: Session, prompt: string): Promise<ResumeResult> {
+  async launchSession(session: Session, prompt: string): Promise<LaunchReceipt> {
     if (!session.cwd || !existsSync(session.cwd)) {
-      return { ok: false, delivered: false, via: "cli-resume", detail: `session cwd is not on disk: ${session.cwd || "(unset)"}` };
+      return { ok: false, requested: false, detail: `session cwd is not on disk: ${session.cwd || "(unset)"}` };
     }
     if (!/^[a-zA-Z0-9_-]+$/.test(session.sessionId) || session.isSubagent) {
-      return { ok: false, delivered: false, via: "cli-resume", detail: "Only a main session with a valid ID can be resumed" };
+      return { ok: false, requested: false, detail: "Only a main session with a valid ID can be resumed" };
     }
     const bash = resolveBash();
-    if (!bash) return { ok: false, delivered: false, via: "cli-resume", detail: "No Git Bash found" };
+    if (!bash) return { ok: false, requested: false, detail: "No Git Bash found" };
     const holders = await runChildProcess(bash, ["-lc", `${posixQuote(this.bin.replaceAll("\\", "/"))} agents --json`], {
       timeoutMs: AGENTS_LIST_TIMEOUT_MS, env: deliveryEnv(),
     });
     const refusal = holderRefusal(holders, session.sessionId);
-    if (refusal) return { ok: false, delivered: false, deferred: true, via: "cli-resume", detail: refusal };
+    if (refusal) return { ok: false, requested: false, deferred: true, detail: refusal };
 
     const deliveriesDir = join(this.config.stateDir, "deliveries");
     mkdirSync(deliveriesDir, { recursive: true });
     // Only the script path ever reaches a command line. The cwd and the prompt are read by the
     // window's shell, so POSIX quoting covers them on either platform.
     const scriptPath = join(deliveriesDir, `${session.sessionId}.sh`);
+    const optionsPath = join(this.config.stateDir, "monitors", `claude-${session.sessionId}.options.json`);
+    const originalArgs = existsSync(optionsPath) ? JSON.parse(readFileSync(optionsPath, "utf8")) : [];
+    if (!Array.isArray(originalArgs) || originalArgs.some((a) => typeof a !== "string")) throw new Error("Invalid saved Claude launch options");
+    const args = claudeRecoveryArgs(originalArgs, session.sessionId, prompt);
     writeFileSync(
       scriptPath,
       [
         "#!/bin/bash",
         `cd ${posixQuote(session.cwd)} || exit 1`,
-        // Unattended, the session otherwise waits on approvals nothing can answer.
-        `${posixQuote(this.bin.replaceAll("\\", "/"))} --resume ${posixQuote(session.sessionId)} --dangerously-skip-permissions ${posixQuote(prompt)}`,
+        [this.bin.replaceAll("\\", "/"), ...args].map(posixQuote).join(" "),
         "",
       ].join("\n"),
       "utf8",
@@ -260,12 +289,12 @@ export class ClaudeAdapter implements Adapter {
       env: deliveryEnv(),
     });
     if (!launched.ok) {
-      return { ok: false, delivered: false, via: "cli-resume", detail: launched.detail };
+      return { ok: false, requested: false, detail: launched.detail };
     }
     return {
       ok: true,
-      delivered: true,
-      via: "cli-resume",
+      requested: true,
+
       detail: `window requested via ${launched.detail}; not an acceptance or completion acknowledgement`,
     };
   }
@@ -324,7 +353,7 @@ function collectMainSession(
     cwd: state.cwd,
     lastAssistantAt,
     model: state.model,
-    status: state.status,
+    lastEvent: state.status,
     spoken: state.spoken,
     isSubagent,
     parentThreadId: isSubagent ? parentSessionId : null,
@@ -356,7 +385,7 @@ const PROMPT_SOURCE = "promptSource";
 
 interface TailState {
   sessionId: string | null;
-  status: SessionStatus;
+  status: RecordedEvent;
   cwd: string;
   lastAssistantAt: number | null;
   model: string | null;
@@ -380,39 +409,16 @@ export function inspectTranscriptTail(file: string): TailState | null {
     } catch {}
   }
 
-  // Newest assistant record wins: either text or tool_use blocks count as one response.
-  for (let i = lines.length - 1; i >= 0; i--) {
-    let record: Record<string, unknown>;
-    try {
-      record = JSON.parse(lines[i]!) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    const type = record["type"];
-    if (type === "user" && record["isMeta"] !== true) {
-      const content = (record["message"] as { content?: unknown } | undefined)?.content;
-      if (typeof content === "string" || (Array.isArray(content) && content.some((p) => p?.type === "text"))) {
-        return { sessionId, status: "running", cwd, lastAssistantAt: null, model, spoken };
-      }
-    }
-    if (!cwd && typeof record["cwd"] === "string") cwd = record["cwd"] as string;
-    if (type !== "assistant") {
-      continue;
-    }
-    const at = Date.parse(String(record["timestamp"] ?? "")) || null;
-    if (record["isApiErrorMessage"] === true) {
-      const tag = typeof record["error"] === "string" ? (record["error"] as string) : null;
-      const status: SessionStatus = tag === QUOTA_ERROR_TAG ? "quota-limited" : "errored";
-      return { sessionId, status, cwd, lastAssistantAt: at, model, spoken };
-    }
-    const message = record["message"] as { stop_reason?: string; content?: Array<{ type?: string }> } | undefined;
-    const status = message?.stop_reason === "tool_use" || message?.content?.some((p) => p.type === "tool_use") ? "running" : "completed";
-    return { sessionId, status, cwd, lastAssistantAt: at, model, spoken };
+  let status: RecordedEvent = "unknown";
+  let lastAssistantAt: number | null = null;
+  for (const line of lines) {
+    let row;
+    try { row = JSON.parse(line); } catch { continue; }
+    const event = parseEvent("claude", row, 0);
+    if (event.state) status = event.state;
+    if (row.type === "assistant") lastAssistantAt = Date.parse(row.timestamp ?? "") || lastAssistantAt;
   }
-
-  // No assistant record in the tail window — only a human prompt without any reply yet,
-  // so the session is waiting on the model, not on the user.
-  return { sessionId, status: "running", cwd, lastAssistantAt: null, model, spoken };
+  return { sessionId, status, cwd, lastAssistantAt, model, spoken };
 }
 
 function recentUtterances(lines: string[]): Utterance[] {

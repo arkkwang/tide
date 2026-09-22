@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { spawnDetached } from "./util.js";
+import { spawnDetached } from "../util.js";
 
 /** Quote for a POSIX shell: single quotes, with an embedded quote closed and reopened. */
 export function posixQuote(text: string): string {
@@ -84,4 +84,25 @@ export function launchWindow(req: LaunchRequest): LaunchResult {
   }
 
   return { ok: false, detail: `${process.platform} has no terminal-window launcher` };
+}
+
+// Preserve safety/model/environment options on recovery. Initial launch argv are always untouched.
+// Positional initial prompts and session selection flags must not be replayed as a second task.
+export function claudeRecoveryArgs(args: string[], id: string, prompt: string): string[] {
+  const values = new Set(["--model", "--effort", "--permission-mode", "--settings", "--setting-sources", "--agent", "--system-prompt", "--append-system-prompt", "--fallback-model"]);
+  const lists = new Set(["--add-dir", "--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools", "--tools", "--mcp-config", "--plugin-dir"]);
+  const switches = new Set(["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--strict-mcp-config", "--disable-slash-commands", "--bare", "--safe-mode", "--restricted", "--chrome"]);
+  const kept: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--") break;
+    const name = arg.split("=", 1)[0]!;
+    if (switches.has(name) || ((values.has(name) || lists.has(name)) && arg.includes("="))) kept.push(arg);
+    else if (values.has(name) && args[i + 1] !== undefined) kept.push(arg, args[++i]!);
+    else if (lists.has(name)) {
+      kept.push(arg);
+      while (args[i + 1] !== undefined && !args[i + 1]!.startsWith("-")) kept.push(args[++i]!);
+    }
+  }
+  return [...kept, "--resume", id, "--", prompt];
 }

@@ -1,7 +1,8 @@
-import { commandDenyCurrent, commandDoctor, commandResume, commandStatus, startWatch } from "./commands.js";
-import { Config, MAX_SESSIONS_RETURNED } from "./config.js";
+import { commandDenyCurrent, commandDoctor, commandQuota, commandResume, commandStatus, startWatch } from "./commands.js";
+import { Config, MAX_SESSIONS_RETURNED } from "../config.js";
 import { commandControl } from "./control.js";
-import { foreground, launchThroughBash, wrapperInvocation } from "./launch.js";
+import { foreground, launchThroughBash, wrapperInvocation } from "../features/foreground.js";
+import { monitorWorker, stopMonitor } from "../features/monitor.js";
 
 const USAGE = `tide — resume Codex / Claude Code sessions after a quota limit resets
 
@@ -9,11 +10,14 @@ Usage:
   tide claude [CLI args...]                         Run Claude here and watch this session
   tide codex [CLI args...]                          Run Codex here and watch this session
   tide tail <session-id> --cli <kind> [--limit N] [--after cursor] [--json]
+  tide snapshot <session-id> --cli <kind> [--limit N] [--json]
   tide send <session-id> --cli <kind> (--message text | --message-file path) [--dry-run] [--json]
   tide wait <session-id> --cli <kind> --after cursor [--timeout seconds] [--json]
-  tide status [--cli <kind>] [--json] [--limit <n>]   Account state, and what is waiting to resume
-  tide resume <session-id> [--cli <kind>] [--json]   Send one turn to one session, right now
-  tide watch                                        Watch and resume until you stop it (Ctrl-C)
+  tide status [--cli <kind>] [--json] [--limit <n>]   Recorded events and monitor state (no quota probe)
+  tide quota [--cli <kind>]                        Explicit quota check (Claude sends a real probe)
+  tide resume <session-id> [--cli <kind>] [--json]   Queue continuation or explicitly launch a closed Claude session
+  tide watch --session <id> | --session-all           Register persistent monitoring
+  tide unwatch <id> | --session-all --cli <kind>      Cancel monitoring; leave CLI processes alone
   tide doctor                                        Check that this machine can run it
   tide deny-current [--cli <kind>]                  Add every currently quota-limited session to sessionDenyList
 
@@ -21,6 +25,7 @@ Options:
   --after <cursor>  Read/wait after a cursor returned by tail or send
   --message <text>  Send literal text, without changing the configured resume prompt
   --message-file <path>  Read the message from a UTF-8 file
+  --mode <queue|interrupt>  send only; default queue. Unsupported interruption fails explicitly.
   --timeout <seconds>  Bounded wait (default 60); timeout never stops the session
   --cli <kind>      Only this CLI: codex, claude
   --dry-run         Say what would happen without resuming anything
@@ -40,6 +45,7 @@ interface Flags {
   after?: string;
   message?: string;
   messageFile?: string;
+  mode?: "queue" | "interrupt";
   timeout?: number;
   /** Config-mergeable. Absent means "don't override config". */
   dryRun?: boolean;
@@ -57,7 +63,7 @@ function parseArgs(argv: string[]): Flags {
     parseErrors: [],
     json: false,
   };
-  const takesValue = ["--cli", "--session", "--limit", "--after", "--message", "--message-file", "--timeout"];
+  const takesValue = ["--cli", "--session", "--limit", "--after", "--message", "--message-file", "--timeout", "--mode"];
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "-h" || arg === "--help") {
@@ -70,7 +76,10 @@ function parseArgs(argv: string[]): Flags {
         flags.parseErrors.push(`${arg} needs a value`);
         continue;
       }
-      if (arg === "--message") {
+      if (arg === "--mode") {
+        if (value !== "queue" && value !== "interrupt") flags.parseErrors.push("--mode must be queue or interrupt");
+        else flags.mode = value;
+      } else if (arg === "--message") {
         flags.message = value;
       } else if (arg === "--message-file") {
         flags.messageFile = value;
@@ -117,14 +126,19 @@ function applyFlags(config: Config, flags: Flags): Config {
       overlay[key] = flagFields[key];
     }
   }
+  if (flags.sessionAllowList && flags.sessionAll === undefined) overlay.sessionAll = false;
   if (Object.keys(overlay).length > 0) {
-    config.update(overlay);
+    return config.withOverrides(overlay);
   }
   return config;
 }
 
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
+  if (argv[0] === "__monitor") {
+    if (!["claude", "codex"].includes(argv[1] ?? "") || !argv[2] || !/^\d+$/.test(argv[3] ?? "")) throw new Error("Invalid monitor invocation");
+    return monitorWorker(argv[1] as "claude" | "codex", argv[2], Number(argv[3]));
+  }
   const wrapper = wrapperInvocation(argv);
   if (wrapper) return launchThroughBash(wrapper.cli, wrapper.args);
   if (argv[0] === "__foreground") {
@@ -142,12 +156,14 @@ async function main(): Promise<number> {
     console.error(USAGE);
     return 2;
   }
+  if (flags.mode !== undefined && flags.command !== "send") throw new Error("--mode is only supported by send");
 
   let config: Config;
-  if (["tail", "send", "wait"].includes(flags.command)) {
+  if (["snapshot", "tail", "send", "wait"].includes(flags.command)) {
     const allowed: Record<string, string[]> = {
+      snapshot: ["--cli", "--limit", "--json"],
       tail: ["--cli", "--limit", "--after", "--json"],
-      send: ["--cli", "--message", "--message-file", "--dry-run", "--json"],
+      send: ["--cli", "--message", "--message-file", "--dry-run", "--json", "--mode"],
       wait: ["--cli", "--after", "--timeout", "--json"],
     };
     const used: Record<string, unknown> = { "--limit": flags.limit, "--after": flags.after, "--message": flags.message, "--message-file": flags.messageFile, "--timeout": flags.timeout, "--dry-run": flags.dryRun, "--skip-quota-check": flags.skipQuotaCheck, "--session-all": flags.sessionAll, "--session": flags.sessionAllowList };
@@ -159,7 +175,7 @@ async function main(): Promise<number> {
     return commandControl(Config.fromFile(false), { ...flags, id: flags.positional[0]! });
   }
   try {
-    config = applyFlags(Config.fromFile(), flags);
+    config = applyFlags(Config.fromFile(false), flags);
   } catch (err) {
     console.error(`config error: ${(err as Error).message}`);
     return 2;
@@ -170,6 +186,12 @@ async function main(): Promise<number> {
       return commandDoctor(config);
     case "status":
       return await commandStatus(config, flags.cli, flags.json, flags.limit);
+    case "quota":
+      if (flags.dryRun) {
+        console.log(JSON.stringify({ dryRun: true, detail: "No quota query performed" }));
+        return 0;
+      }
+      return await commandQuota(config, flags.cli);
     case "resume":
       return await commandResume(config, flags.cli, flags.positional[0], flags.json);
     case "watch":
@@ -179,6 +201,14 @@ async function main(): Promise<number> {
         return 2;
       }
       return await startWatch(config, flags.cli);
+    case "unwatch": {
+      if (!["claude", "codex"].includes(flags.cli ?? "") || (flags.sessionAll ? flags.positional.length !== 0 : flags.positional.length !== 1)) throw new Error("unwatch requires a full session ID or --session-all, and --cli");
+      const cli = flags.cli as "claude" | "codex";
+      const id = flags.sessionAll ? "__all__" : flags.positional[0]!;
+      stopMonitor(config, cli, id);
+      console.log(JSON.stringify({ cli, sessionId: id, monitoring: false }));
+      return 0;
+    }
     case "deny-current":
       return await commandDenyCurrent(config, flags.cli);
     default:

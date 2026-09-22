@@ -176,6 +176,11 @@ export class Config {
     return this;
   }
 
+  /** Invocation options affect this process only. */
+  withOverrides(patch: Record<string, unknown>): Config {
+    return new Config(mergeConfig({ ...this }, patch) as Record<string, unknown>);
+  }
+
   static #readFromDisk(path: string): Record<string, unknown> {
     let parsed: unknown;
     try {

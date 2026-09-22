@@ -1,27 +1,27 @@
+import { executionSnapshot, readTranscript, parseEvent } from "./transcript.js";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { SCAN_MTIME_CUTOFF_MS, type CodexConfig } from "./config.js";
-import { messageText, oneLine, runChildProcess } from "./util.js";
+import { join, resolve } from "node:path";
+import { SCAN_MTIME_CUTOFF_MS, type CodexConfig } from "../config.js";
+import { messageText, oneLine, runChildProcess } from "../util.js";
 import {
   SPOKEN_CHARS,
   SPOKEN_COUNT,
   type Adapter,
   type QuotaInfo,
-  type ResumeResult,
+  type DeliveryResult,
   type Session,
-  type SessionStatus,
+  type RecordedEvent,
   type Utterance,
   type WindowInfo,
-} from "./watch.js";
+} from "../core/session.js";
 
 /** Windows Store app-execution aliases exist on disk but fail to launch with `Access is denied`. */
 function isStoreShim(path: string): boolean {
   return /[\\/]WindowsApps[\\/]/i.test(path);
 }
 
-const QUOTA_ERROR_TAGS = new Set(["usage_limit_exceeded", "rate_limit_exceeded"]);
 
 const STDERR_KEEP = 20;
 const STDERR_SHOW = 3;
@@ -293,6 +293,13 @@ function quotaFromRateLimits(result: RateLimitsReadResult): QuotaInfo {
     };
 }
 
+export function explicitCodexResume(args: string[]): string | null {
+  if (args[0] !== "resume") return null;
+  const id = args[1];
+  if (!id || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) throw new Error("Watched Codex resume needs an explicit UUID: tide codex resume <id>. Use codex directly for the session picker.");
+  return id;
+}
+
 export class CodexAdapter implements Adapter {
   readonly kind = "codex" as const;
 
@@ -300,6 +307,26 @@ export class CodexAdapter implements Adapter {
     private readonly bin: string,
     private readonly config: CodexConfig,
   ) {}
+
+  history(session: Session, after?: string) { return readTranscript(this.kind, session, after); }
+
+  snapshot(session: Session, limit: number) { return executionSnapshot(this.kind, session, limit); }
+
+  async prepareLaunch(args: string[]): Promise<{ args: string[]; sessionId: string }> {
+    if (args.some((a) => a === "--remote" || a.startsWith("--remote="))) throw new Error("Tide can only watch local Codex sessions; run codex directly for --remote");
+    const existing = explicitCodexResume(args);
+    if (existing) return { args: [...args], sessionId: existing };
+    let cwd = process.cwd();
+    for (let i = 0; i < args.length; i++) {
+      if (["-C", "--cd"].includes(args[i]!)) {
+        const value = args[++i];
+        if (!value) throw new Error("Codex working directory option needs a value");
+        cwd = resolve(value);
+      } else if (args[i]!.startsWith("--cd=")) cwd = resolve(args[i]!.slice(5));
+    }
+    const result = await askAppServer<{ thread: { id: string } }>(this.bin, "thread/start", { cwd }, true);
+    return { sessionId: result.thread.id, args: ["resume", result.thread.id, ...args] };
+  }
 
   resolveBin(): string {
     return this.bin;
@@ -351,13 +378,13 @@ export class CodexAdapter implements Adapter {
         source: s.source,
         isSubagent: s.parentThreadId !== null,
         parentThreadId: s.parentThreadId,
-        status: s.status,
+        lastEvent: s.status,
         spoken: s.spoken,
       }))
       .sort((a, b) => b.lastAssistantAt - a.lastAssistantAt);
   }
 
-  async resume(session: Session, prompt: string): Promise<ResumeResult> {
+  async send(session: Session, prompt: string): Promise<DeliveryResult> {
     if (process.platform !== "win32") {
       return { ok: false, delivered: false, deferred: true, via: "none", detail: "This delivery build supports Windows only" };
     }
@@ -433,7 +460,7 @@ interface ThreadState {
   parentThreadId: string | null;
   source: string | null;
   at: number;
-  status: SessionStatus;
+  status: RecordedEvent;
   lastAssistantAt: number | null;
   spoken: Utterance[];
 }
@@ -453,7 +480,7 @@ function parseRollout(file: string): ThreadState | null {
   let cwd = "";
   let source: string | null = null;
   let parentThreadId: string | null = null;
-  let latest: { at: number; status: SessionStatus } | null = null;
+  let latest: { at: number; status: RecordedEvent } | null = null;
   let lastAssistantAt: number | null = null;
   const spoken: Utterance[] = [];
 
@@ -482,25 +509,8 @@ function parseRollout(file: string): ThreadState | null {
       continue;
     }
 
-    if (payload["type"] === "task_complete") {
-      const error = payload["error"] as { codex_error_info?: string } | null;
-      const codexInfo = error?.codex_error_info ?? "";
-      if (QUOTA_ERROR_TAGS.has(codexInfo)) {
-        latest = { at, status: "quota-limited" };
-      } else if (error) {
-        latest = { at, status: "errored" };
-      } else {
-        latest = { at, status: "completed" };
-      }
-    }
-
-    if (payload["type"] === "task_started") {
-      latest = { at, status: "running" };
-    }
-
-    if (payload["type"] === "turn_aborted") {
-      latest = { at, status: "aborted" };
-    }
+    const event = parseEvent("codex", record, 0);
+    if (event.state) latest = { at, status: event.state };
 
     // Only a submitted message emits a `UserMessage` item; the `user` role is shared with
     // injected context, so the role alone cannot tell the two apart.
@@ -508,7 +518,6 @@ function parseRollout(file: string): ThreadState | null {
       const item = payload["item"] as { type?: string; content?: unknown } | undefined;
       if (item?.type === "UserMessage") {
         // The user just submitted a prompt; the session is now waiting on the model.
-        latest = { at, status: "running" };
         const said = oneLine(messageText(item.content), SPOKEN_CHARS);
         if (said) {
           spoken.unshift({ text: said });
