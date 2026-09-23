@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
-import { runSession } from "../terminal/host.js";
-import { launchSession, consumeLaunch } from "../terminal/launch.js";
-import { liveSessions, requestSession } from "../terminal/ipc.js";
-import { errorMessage, type ShellOptions, type Snapshot, type IdleResult, type Request } from "../terminal/types.js";
+import { runSession } from "../session/host.js";
+import { launchSession, consumeLaunch } from "../session/launch.js";
+import { liveSessions, requestSession } from "../session/ipc.js";
+import { errorMessage, type ShellOptions, type Snapshot, type IdleResult, type Request } from "../session/types.js";
 import { validateWait } from "../terminal/idle.js";
 
 import { commandHelp, help } from "./help.js";

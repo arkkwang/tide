@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { commandHelp } from "../src/cli/help.ts";
+import { commandHelp } from "../../src/cli/help.ts";
 
 const cli = (...args: string[]) => spawnSync(process.execPath, [resolve("dist/tide.mjs"), ...args], {
   encoding: "utf8", windowsHide: true, timeout: 5000,

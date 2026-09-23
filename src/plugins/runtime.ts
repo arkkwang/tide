@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { errorMessage, type SessionInfo, type Snapshot } from "./types.js";
+import { errorMessage, type SessionInfo, type Snapshot } from "../session/types.js";
+import { createCodexResume } from "./codex-resume/index.js";
+import { createClaudeResume } from "./claude-code-resume/index.js";
 
 export interface ObserveContext {
   session: Readonly<SessionInfo>;
@@ -23,11 +25,12 @@ export async function loadPlugins(state: string): Promise<TidePlugin[]> {
   const file = join(state, "plugins.json");
   if (!existsSync(file)) return [];
   const config = JSON.parse(readFileSync(file, "utf8")) as { plugins?: unknown };
-  if (!Array.isArray(config.plugins) || !config.plugins.every((p) => typeof p === "string")) throw Error(`${file}: plugins must be an array of explicit local module paths`);
+  if (!Array.isArray(config.plugins) || !config.plugins.every((p) => typeof p === "string")) throw Error(`${file}: plugins must be an array of bundled plugin names or explicit local module paths`);
   const plugins: TidePlugin[] = [];
   for (const path of config.plugins as string[]) {
-    const module = await import(pathToFileURL(isAbsolute(path) ? path : resolve(dirname(file), path)).href);
-    const plugin = module.default as TidePlugin;
+    const plugin: TidePlugin = path === "codex-resume" ? createCodexResume()
+      : path === "claude-code-resume" ? createClaudeResume()
+      : (await import(pathToFileURL(isAbsolute(path) ? path : resolve(dirname(file), path)).href)).default;
     if (!plugin || !/^[a-z][a-z0-9-]*$/.test(plugin.id) || typeof plugin.detect !== "function" || (plugin.start !== undefined && typeof plugin.start !== "function")) throw Error(`Invalid Tide plugin: ${path}`);
     if (plugins.some((p) => p.id === plugin.id)) throw Error(`Duplicate plugin ID: ${plugin.id}`);
     for (const [name, command] of Object.entries(plugin.commands ?? {})) {

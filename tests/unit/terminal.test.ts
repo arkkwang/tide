@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Screen, encodeText } from "../src/terminal/screen.ts";
-import { encodeKey } from "../src/terminal/keys.ts";
-import { resolveSession } from "../src/terminal/store.ts";
-import { Plugins, type TidePlugin } from "../src/terminal/plugins.ts";
-import { launchCommand } from "../src/terminal/launch.ts";
-import type { SessionInfo } from "../src/terminal/types.ts";
-import { waitIdle } from "../src/terminal/idle.ts";
+import { Screen, encodeText } from "../../src/terminal/screen.ts";
+import { encodeKey } from "../../src/terminal/keys.ts";
+import { resolveSession } from "../../src/session/registry.ts";
+import { Plugins, type TidePlugin } from "../../src/plugins/runtime.ts";
+import { launchCommand } from "../../src/session/launch.ts";
+import type { SessionInfo } from "../../src/session/types.ts";
+import { waitIdle } from "../../src/terminal/idle.ts";
 
 test("capture renders split VT sequences, cursor edits, colors and alternate screens", async () => {
   const screen = new Screen(40, 8);

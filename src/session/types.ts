@@ -22,6 +22,7 @@ export interface Snapshot {
   buffer: "normal" | "alternate";
   title: string;
   text: string;
+  cursor?: { row: number; col: number };
 }
 
 export interface ShellOptions {

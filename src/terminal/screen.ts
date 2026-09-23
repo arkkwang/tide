@@ -1,5 +1,5 @@
 import xterm from "@xterm/headless";
-import type { Snapshot } from "./types.js";
+import type { Snapshot } from "../session/types.js";
 
 export const MAX_CAPTURE_LINES = 2000;
 
@@ -29,7 +29,8 @@ export class Screen {
     const end = Math.min(buffer.length, buffer.baseY + this.terminal.rows);
     const text = [];
     for (let row = Math.max(0, end - lines); row < end; row++) text.push(buffer.getLine(row)?.translateToString(true) ?? "");
-    return { id, capturedAt: new Date().toISOString(), cols: this.terminal.cols, rows: this.terminal.rows, buffer: buffer.type, title: this.title, text: text.join("\n") };
+    return { id, capturedAt: new Date().toISOString(), cols: this.terminal.cols, rows: this.terminal.rows, buffer: buffer.type, title: this.title, text: text.join("\n"),
+      cursor: { row: buffer.baseY + buffer.cursorY - Math.max(0, end - lines), col: buffer.cursorX } };
   }
 
   dispose() { this.terminal.dispose(); }

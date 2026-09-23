@@ -3,13 +3,13 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdirSync, unlinkSync } from "node:fs";
-import { Screen, encodeText } from "./screen.js";
-import { encodeKey } from "./keys.js";
-import { Registry, validateId } from "./store.js";
+import { Screen, encodeText } from "../terminal/screen.js";
+import { encodeKey } from "../terminal/keys.js";
+import { Registry, validateId } from "./registry.js";
 import { listen } from "./ipc.js";
-import { loadPlugins, Plugins } from "./plugins.js";
-import { shellCommand } from "./shell.js";
-import { waitIdle } from "./idle.js";
+import { loadPlugins, Plugins } from "../plugins/runtime.js";
+import { shellCommand } from "../terminal/shell.js";
+import { waitIdle } from "../terminal/idle.js";
 import type { Request, SessionInfo, SessionRecord, ShellOptions } from "./types.js";
 
 export async function runSession(options: ShellOptions, id: string = randomUUID()): Promise<number> {

@@ -103,11 +103,42 @@ CLI 退出后仍回到同一个 shell 和 Tide ID；shell 退出或 `close` 后�
 
 ## Plugin
 
-通过 `.tide/plugins.json` 显式加载本地模块，提供 `detect`、扩展命令、可选 `start` 和输出变化订阅。未来的限流/额度恢复插件可调用同一套 `send`、`sendKey`，不需要独立投递路径。
+通过 `.tide/plugins.json` 显式加载插件，提供 `detect`、扩展命令、可选 `start` 和输出变化订阅。恢复插件复用同一套 `send`、`sendKey`，不使用独立投递路径。
 
-[插件契约和示例](docs/plugins.md)。本轮没有内置 Claude/Codex 状态识别或自动恢复。
+[插件契约和示例](docs/plugins.md)。内置可选的 `codex-resume` 和 `claude-code-resume`，通过 `.tide/plugins.json` 启用，重开会话生效：
+
+```json
+{"plugins":["codex-resume","claude-code-resume"]}
+```
+
+```bash
+tide plugins 5fefa
+tide plugin 5fefa claude-code-resume status
+tide plugin 5fefa claude-code-resume check
+tide plugin 5fefa claude-code-resume disable
+```
+
+插件支持限额和 API 连接中断；只处理最新响应明确中断且输入框为空的窗口。最终错误画面默认需连续稳定 3 分钟，CLI 仍在重试、出现新回复或用户输入时不会接管，`check` 也不能绕过缓冲。Codex 额度通过 App Server 查询，网络中断用 `codex exec --ephemeral` 独立探测；Claude 用 `claude -p` JSON ping/pong 探测。确认成功后才向原窗口发送继续，未恢复时每 5 分钟重查。`status` 只读。配置、限制和验证范围见 [中断恢复插件](docs/resume-plugins.md)。
 
 ## 验证与迁移
+
+源码按职责组织：
+
+```text
+src/
+  cli/                      命令解析与帮助
+  session/                  会话宿主、启动、登记与 IPC
+  terminal/                 屏幕渲染、按键、shell 与 idle 检测
+  plugins/
+    runtime.ts              插件契约、加载与生命周期
+    codex-resume/           Codex 探测与恢复入口
+    claude-code-resume/     Claude Code 探测与恢复入口
+    recovery/               共用恢复流程、画面识别与探测进程
+tests/
+  unit/                     单元测试
+  integration/              真实 PTY 与会话集成测试
+  fixtures/                 测试用终端和 CLI
+```
 
 后续问题记录在 [待验证问题](docs/open-questions.md)：快照 token 消耗和调用轮次，以及多个 capture 的相互影响。
 

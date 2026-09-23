@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { basename, resolve } from "node:path";
-import type { ShellOptions } from "./types.js";
+import type { ShellOptions } from "../session/types.js";
 
 export function shellCommand(options: ShellOptions) {
   let shell = options.shell || process.env.TIDE_SHELL || process.env.SHELL;

@@ -4,9 +4,9 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Registry } from "../src/terminal/store.ts";
-import { liveSessions, requestSession, rpc } from "../src/terminal/ipc.ts";
-import type { SessionInfo, Snapshot } from "../src/terminal/types.ts";
+import { Registry } from "../../src/session/registry.ts";
+import { liveSessions, requestSession, rpc } from "../../src/session/ipc.ts";
+import type { SessionInfo, Snapshot } from "../../src/session/types.ts";
 
 const entry = resolve("dist/tide.mjs");
 const shell = process.platform === "win32" ? spawnSync("where.exe", ["bash.exe"], { encoding: "utf8", windowsHide: true }).stdout.split(/\r?\n/).find((p) => p && !/WindowsApps/i.test(p)) : "/bin/bash";

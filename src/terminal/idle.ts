@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { performance } from "node:perf_hooks";
-import type { IdleResult, Snapshot } from "./types.js";
+import type { IdleResult, Snapshot } from "../session/types.js";
 
 export function validateWait(idleTime: number, timeout: number) {
   if (!Number.isFinite(idleTime) || idleTime <= 0 || idleTime > 3600) throw Error("--idle-time must be > 0 and <= 3600 seconds");

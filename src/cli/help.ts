@@ -6,7 +6,7 @@ const afterSend = `AFTER SENDING (options must follow the text/keys)
   Both timings accept decimals. Capture alone is immediate and may precede the
   program's response. Idle is not proof of task completion or prompt readiness.
   JSON keeps {id, written} and adds wait: {id, idle, elapsedMs, idleForMs} and/or
-  capture: {id, capturedAt, cols, rows, buffer, title, text} when requested.
+  capture: {id, capturedAt, cols, rows, buffer, title, text, cursor} when requested.
   Idle timeout still captures if requested, returns idle=false and exits 3.
   If an observation fails after delivery, JSON keeps written=true and adds
   error: {stage, message}; stderr explains the error and exit code is 1. Do not
@@ -142,7 +142,9 @@ OPTIONS
   --plain-text    Print text with spaces/newlines, no JSON wrapper or ANSI colors.
 
 OUTPUT
-  JSON {id, capturedAt, cols, rows, buffer, title, text} by default.
+  JSON {id, capturedAt, cols, rows, buffer, title, text, cursor} by default.
+  cursor has zero-based row (relative to returned text) and col; row can be
+  negative when --lines excludes it. Older hosts may omit cursor.
   buffer is normal or alternate. This is a screen, not a structured transcript.
   Use the text to decide whether input, approval, recovery or more waiting is needed.
 EXAMPLES
@@ -192,10 +194,17 @@ OUTPUT
 
 CONFIGURATION
   TIDE_STATE_DIR/plugins.json (default installation .tide/plugins.json) contains
-  {"plugins":["/absolute/path/to/plugin.mjs"]}. Relative paths resolve from that
+  {"plugins":["codex-resume","claude-code-resume"]} enables bundled automatic
+  interruption recovery. Or list explicit local module paths; relative paths resolve from that
   file. Modules load at shell launch; configure before starting a new session.
-  Plugins run as local code with the user's privileges. No built-in Codex/Claude
-  state detection or automatic recovery is provided.
+  Plugins run as local code with the user's privileges. Recovery plugins act only
+  on the latest quota/connection-interrupted response with an empty input, after
+  180 seconds of stable screen (TIDE_RESUME_DELAY_SECONDS configures 1..3600).
+  Active retries cancel this countdown; check cannot bypass it. Codex quota errors
+  use App Server permission; connection errors probe with codex exec --ephemeral.
+  Claude probes with claude -p JSON. Failed probes retry every 5 minutes.
+  Model probes consume tokens. Discover status/check/disable/enable via
+  this command. check can cause recovery; status is read-only.
 EXAMPLE
   tide plugins abc123`,
   plugin: `tide plugin <id> <plugin> <command> [args...]
@@ -263,7 +272,8 @@ ENVIRONMENT
   Git Bash: use the supplied bin/tide entry to preserve slash text such as /help;
   quoting alone does not prevent MSYS path conversion with direct node invocation.
   Core controls Tide-hosted shells only; no CLI history scanning, semantic status
-  detection or automatic recovery. Additional behavior comes from explicit plugins.
+  detection or automatic recovery in the core. Explicitly enable codex-resume or
+  claude-code-resume for quota/connection recovery; see tide help plugins.
 `;
 
 export function help(command?: string): string {

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Registry, validateId } from "./store.js";
+import { Registry, validateId } from "./registry.js";
 import { rpc } from "./ipc.js";
 import type { SessionInfo, ShellOptions } from "./types.js";
 

@@ -1,8 +1,8 @@
 import { createConnection, createServer, type Socket } from "node:net";
 import { chmodSync } from "node:fs";
-import { Registry, resolveSession } from "./store.js";
+import { Registry, resolveSession } from "./registry.js";
 import { errorMessage, type Request, type SessionInfo, type SessionRecord } from "./types.js";
-import { validateWait } from "./idle.js";
+import { validateWait } from "../terminal/idle.js";
 
 const MAX_BYTES = 4 * 1024 * 1024;
 export function rpc<T = unknown>(record: SessionRecord, request: Request, timeout = request.command === "wait-idle" ? request.timeout * 1000 + 2000 : 10000): Promise<T> {
