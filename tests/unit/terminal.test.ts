@@ -8,6 +8,41 @@ import { launchCommand } from "../../src/session/launch.ts";
 import type { SessionInfo } from "../../src/session/types.ts";
 import { waitIdle } from "../../src/terminal/idle.ts";
 import { requestResize } from "../../src/terminal/resize.ts";
+import { defaultProfile, windowsTerminalProfile } from "../../src/terminal/windows-profile.ts";
+import { setTimeout as sleep } from "node:timers/promises";
+
+test("session activity tracks rendered changes independently of raw output and reads", async () => {
+  let now = 1000;
+  const screen = new Screen(40, 8, () => now);
+  try {
+    now += 500;
+    assert.deepEqual(await screen.activity(), { idleForMs: 500, lastOutputAt: null });
+    await screen.write("hello");
+    const first = await screen.activity();
+    assert.equal(first.idleForMs, 0);
+    assert(Number.isFinite(Date.parse(first.lastOutputAt!)));
+    now += 1000;
+    await sleep(5);
+    await screen.write("\r\x1b[31mhello\x1b[0m\x1b]0;new title\x07");
+    assert.equal((await screen.activity()).idleForMs, 1000);
+    assert.notEqual((await screen.activity()).lastOutputAt, first.lastOutputAt);
+    await screen.capture("id", 1);
+    assert.equal((await screen.activity()).idleForMs, 1000);
+    await screen.write("\rworld");
+    await screen.write("\rhello");
+    assert.equal((await screen.activity()).idleForMs, 0, "changes between info polls still reset idle");
+    now += 500;
+    screen.resize(40, 8);
+    assert.equal((await screen.activity()).idleForMs, 500);
+    const beforeResize = (await screen.activity()).lastOutputAt;
+    screen.resize(50, 10);
+    assert.equal((await screen.activity()).idleForMs, 0);
+    assert.equal((await screen.activity()).lastOutputAt, beforeResize);
+    now += 500;
+    await screen.write("\x1b[?1049h");
+    assert.equal((await screen.activity()).idleForMs, 0);
+  } finally { screen.dispose(); }
+});
 
 test("scroll follows mouse modes, validates cells and never falls back to keys", async () => {
   const screen = new Screen(100, 30);
@@ -120,12 +155,24 @@ test("plugins reuse the input channel, re-detect before writes, and stop observe
   } finally { screen.dispose(); }
 });
 
-test("window launch uses explicit visible Windows window and macOS Terminal", () => {
-  const windows = launchCommand("win32", "C:\\Node JS\\node.exe", "D:\\a b\\tide.mjs", "abc", "D:\\a'b", "unused");
-  const command = Buffer.from(windows.args.at(-1)!, "base64").toString("utf16le");
-  assert(command.includes("-WindowStyle Normal"));
-  assert(command.includes("D:\\a''b"));
+test("window launch uses Windows Terminal profiles without shell interpolation", () => {
+  const windows = launchCommand("win32", "C:\\Node JS\\node.exe", "D:\\a b\\tide.mjs", "abc", "D:\\a'b", "unused", { state: "D:\\private state", profile: "{profile-id}" });
+  assert.equal(windows.binary, "wt.exe");
+  assert.deepEqual(windows.args, ["-w", "new", "new-tab", "--profile", "{profile-id}", "--startingDirectory", "D:\\a'b", "C:\\Node JS\\node.exe", "D:\\a b\\tide.mjs", "__host", "abc", "D:\\private state"]);
+  const defaults = launchCommand("win32", "node", "entry", "abc", "cwd", "unused", { state: "state" });
+  assert(!defaults.args.includes("--profile"));
+  assert(launchCommand("win32", "node", "entry", "abc", "D:\\semi;colon", "unused", { state: "state" }).args.includes("D:\\semi\\;colon"));
   assert.deepEqual(launchCommand("darwin", "node", "entry", "abc", "/tmp", "/tmp/start.command"), { binary: "open", args: ["-a", "Terminal", "/tmp/start.command"] });
+});
+
+test("Windows Terminal default profile handles JSONC without matching comments or nested fields", () => {
+  assert.equal(defaultProfile(`{ // "defaultProfile": "wrong"
+    "profiles": {"defaultProfile": "nested"},
+    "defaultProfile": /* user choice */ "{actual}",
+  }`), "{actual}");
+  assert.equal(defaultProfile('{"profiles":{"defaultProfile":"nested"}}'), undefined);
+  assert.equal(windowsTerminalProfile({ WT_PROFILE_ID: "{current}" }), "{current}");
+  assert.throws(() => windowsTerminalProfile({}), /preferred Windows Terminal profile/);
 });
 
 test("wait-idle counts unchanged rendered content, times out on changes and cancels", async () => {

@@ -1,7 +1,7 @@
-import { enableWindowsVTInput } from '../../src/terminal/windows-input.ts';
+import { configureWindowsConsole } from '../../src/terminal/windows-console.ts';
 
 process.stdin.setRawMode(true);
-enableWindowsVTInput();
+configureWindowsConsole();
 let input = '';
 process.stdin.on('data', (data) => {
   input += data.toString();

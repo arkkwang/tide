@@ -7,6 +7,8 @@ export interface SessionInfo {
   createdAt: string;
   exited: boolean;
   exitCode: number | null;
+  idleForMs?: number;
+  lastOutputAt?: string | null;
 }
 
 export interface SessionRecord extends SessionInfo {

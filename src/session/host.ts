@@ -10,7 +10,8 @@ import { listen } from "./ipc.js";
 import { loadPlugins, Plugins } from "../plugins/runtime.js";
 import { shellCommand } from "../terminal/shell.js";
 import { waitIdle } from "../terminal/idle.js";
-import { enableWindowsVTInput } from "../terminal/windows-input.js";
+import { configureWindowsConsole } from "../terminal/windows-console.js";
+import { writeTerminalOutput } from "../terminal/output.js";
 import { requestResize } from "../terminal/resize.js";
 import type { Request, SessionInfo, SessionRecord, ShellOptions } from "./types.js";
 
@@ -67,7 +68,7 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
     child.resize(cols, rows); screen.resize(cols, rows);
   };
   child.onData((data) => {
-    process.stdout.write(data);
+    writeTerminalOutput(data);
     void screen.write(data).then(() => plugins.outputChanged());
   });
   child.onExit(({ exitCode }) => { info.exited = true; info.exitCode = exitCode; finish(exitCode); });
@@ -77,10 +78,10 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
   };
   try {
     process.stdin.setEncoding("utf8"); process.stdin.setRawMode(true);
-    enableWindowsVTInput();
+    configureWindowsConsole();
     closeServer = await listen(record, async (request: Request, signal) => {
       switch (request.command) {
-        case "info": return info;
+        case "info": return { ...info, ...await screen.activity() };
         case "capture": return screen.capture(id, request.lines);
         case "wait-idle": return waitIdle(() => screen.capture(id), request.idleTime, request.timeout, signal);
         case "send": await send(request.text); return { id, written: true };
@@ -88,7 +89,7 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
         case "resize": {
           let result: Awaited<ReturnType<typeof requestResize>> | undefined;
           await enqueue(async () => {
-            result = await requestResize(request.cols, request.rows, () => ({ cols: process.stdout.columns, rows: process.stdout.rows }), (data) => { process.stdout.write(data); }, signal);
+            result = await requestResize(request.cols, request.rows, () => ({ cols: process.stdout.columns, rows: process.stdout.rows }), writeTerminalOutput, signal);
             resize();
           });
           return { id, ...result };
@@ -112,14 +113,15 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
     return await ended;
   } finally {
     stopping = true;
+    process.stdin.pause();
     await plugins.dispose(); closeServer?.();
     process.off("exit", emergencyCleanup); process.off("SIGTERM", stop); process.off("SIGHUP", stop);
     process.stdout.off("resize", resize); process.stdin.off("data", input); process.stdin.off("end", stop);
-    process.stdin.setRawMode(false); process.stdin.pause();
-    process.stdin.unref();
     emergencyCleanup();
     if (process.platform !== "win32") { try { unlinkSync(endpoint); } catch {} }
     screen.dispose();
     await new Promise<void>((resolve) => process.stdout.write("\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1049l", () => resolve()));
+    process.stdin.setRawMode(false);
+    process.stdin.unref();
   }
 }

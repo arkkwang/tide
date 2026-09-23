@@ -33,3 +33,23 @@ test("invalid help and commands fail with actionable guidance", () => {
   }
   assert.match(cli("missing").stderr, /Unknown command/);
 });
+
+test("launch validates combined options before opening a terminal", () => {
+  for (const [args, message] of [
+    [["launch", "--with-command"], /needs a command/],
+    [["launch", "--with-command", ""], /needs a command/],
+    [["launch", "--with-command", "echo ok", "--with-command", "echo twice"], /only be supplied once/],
+    [["launch", "--with-command", "echo ok\nexit"], /single line/],
+    [["launch", "--with-command", "echo ok", "--lines", "5"], /requires --with-capture/],
+    [["launch", "--with-command", "echo ok", "--timeout", "1"], /require --wait-idle/],
+    [["launch", "--with-command", "echo ok", "--with-capture", "--lines", "0"], /1..2000/],
+    [["launch", "--with-command", "echo ok", "--with-enter"], /Unknown operation option/],
+    [["launch", "--with-capture"], /require --with-command/],
+    [["run", "--with-command", "echo ok"], /Unknown launch option/],
+  ] as Array<[string[], RegExp]>) {
+    const result = cli(...args);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, message);
+  }
+});

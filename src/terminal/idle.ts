@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { performance } from "node:perf_hooks";
 import type { IdleResult, Snapshot } from "../session/types.js";
+import { screenContent } from "./screen.js";
 
 export function validateWait(idleTime: number, timeout: number) {
   if (!Number.isFinite(idleTime) || idleTime <= 0 || idleTime > 3600) throw Error("--idle-time must be > 0 and <= 3600 seconds");
@@ -15,7 +16,7 @@ export async function waitIdle(capture: () => Promise<Snapshot>, idleTime: numbe
     signal?.throwIfAborted();
     const snapshot = await capture();
     const now = performance.now();
-    const content = JSON.stringify([snapshot.cols, snapshot.rows, snapshot.buffer, snapshot.text]);
+    const content = screenContent(snapshot);
     if (previous && content !== previous) changed = now;
     previous = content;
     const elapsedMs = now - start, idleForMs = now - changed;
