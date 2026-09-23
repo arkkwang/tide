@@ -10,7 +10,7 @@
 
 相对路径以这个配置文件所在目录为基准。每个会话启动时加载一次，修改后重开会话。没有自动扫描工作目录、下载或热更新。插件以用户权限运行，应仅配置可信代码。
 
-也可填写随 Tide 打包的名称 `codex-resume`、`claude-code-resume`，见[中断恢复插件](resume-plugins.md)。配置即启用对应会话内的自动恢复；未配置不会启动探测。
+也可填写随 Tide 打包的名称 `codex-resume`、`claude-code-resume`，见[中断恢复插件](resume-plugins.md)。`codex-resume` / `claude-code-resume` 配置即启用对应会话内的自动恢复；未配置不会启动探测。
 
 ```bash
 tide plugins <id>
@@ -74,4 +74,6 @@ export default {
 
 关闭会话时取消订阅、调用清理函数并拒绝后续写入。核心没有独立后台 watcher；插件生命周期随托管进程结束。
 
-随包提供屏幕查询示例和两个可选中断恢复插件。CLI 特有的屏幕判定、探测策略和缓冲恢复逻辑位于插件层，不加入终端核心。
+随包提供屏幕查询示例、两个可选中断恢复插件。CLI 特有的屏幕判定、探测策略和缓冲恢复逻辑位于插件层，不加入终端核心。
+
+> 启动新会话时直接切 env + 启动二进制（不需要先开 bash）的能力已迁到 `tide launch --profile`，详见 README 的"启动 profile"一节。本节只讲插件。

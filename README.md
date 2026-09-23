@@ -11,27 +11,49 @@ npm run build
 # Git Bash：在项目根目录定义当前窗口的快捷函数
 tide() { bash /d/workspace/program/personal/tide/bin/tide "$@"; }
 
-tide run                    # 在当前终端启动托管 shell
-# 或 tide launch            # 新开可见系统终端窗口（Windows / macOS）
+# 新开可见窗口，执行 echo hello，等待并返回会话 ID 和画面
+tide launch --with-command "echo hello" --wait-idle --with-capture
 ```
 
 需要全局 `tide` 命令时，在项目目录执行 `npm run link:local`，会先构建再刷新 npm 全局入口。普通代码修改执行 `npm run build` 即可；`package.json` 的 `bin` 改动后必须重新 link，build 不会重建 npm 已生成的启动脚本。尤其从旧的 `dist/tide.mjs` 入口升级时，需要这一步才能启用 Git Bash 文本保护。`npm pack` 前自动构建，包内只包含运行入口、构建产物、示例及文档，不包含本地会话数据。
 
-另开一个 Git Bash 窗口，同样定义上面的 `tide` 函数：
+Windows 的 `launch` 通过 `wt.exe` 新开 Windows Terminal 窗口：从 Windows Terminal 内调用时沿用 `WT_PROFILE_ID` 对应的配置，否则使用用户默认配置，包括配色和字体。Shell 仍按 `--shell` / 环境变量选择，并加载正常的启动文件。未安装 Windows Terminal 时可在已有终端使用 `tide run`。新启动方式只影响新窗口，不更改已有会话。
+
+从返回的 `capture` 确认 shell 提示符就绪后，使用同一次返回的 `id` 继续操作：
 
 ```bash
-tide list
-tide send 5fefa 'claude'     # 填入文本，尚不执行
-tide send-key 5fefa Enter
-tide capture 5fefa --plain-text
-
-# 观察到 Claude 输入框后
-tide send 5fefa '/help'
-tide send-key 5fefa Enter
-tide capture 5fefa --plain-text
+tide send 5fefa 'echo world' --with-enter --wait-idle --with-capture
+# 长任务仍在执行时继续等，不重复发送
+tide wait-idle 5fefa --timeout 300 --with-capture
+# 确定不再需要整个会话时
+tide close 5fefa
 ```
 
-例子中的 `5fefa` 替换成 `tide list` 中的实际 ID 前缀。所有接收 Session ID 的命令都支持无歧义前缀，完整 ID 精确匹配优先；有多个候选就列出并拒绝执行。
+例子中的 `5fefa` 替换成 `launch` 或 `tide list` 返回的实际 ID 前缀。所有接收 Session ID 的命令都支持无歧义前缀，完整 ID 精确匹配优先；有多个候选就列出并拒绝执行。复用已有会话时，先 `tide list`，再 `tide capture <id>` 确认当前提示符。已拿到最新的组合操作 `capture` 时可直接据此判断下一步，无需再抓一次屏。
+
+需要在当前终端托管 shell 时使用 `tide run`，再从另一个终端控制它；启动文件需要交互或必须先检查启动画面时，使用不带命令的 `tide launch`，随后 `tide wait-idle <id> --with-capture`。
+
+常用路径（先确认当前画面再输入）：
+
+| 场景 | 操作 |
+| --- | --- |
+| 新开会话并启动已知命令 | `tide launch --with-command "echo hello" --wait-idle --with-capture`，自动发送 Enter |
+| 提交内容并查看响应 | `tide send <id> '内容' --with-enter --wait-idle --with-capture` |
+| 只填入内容，留给用户检查 | `tide send <id> '内容' --with-capture` |
+| 确认菜单或权限提示 | `tide send-key <id> Enter --wait-idle --with-capture`，按当前提示选择正确按键 |
+| 长任务仍在运行，继续观察 | `tide wait-idle <id> --timeout 60 --with-capture`，不重发原任务；若预期执行较长，可调大 `--timeout`（如 300 秒，上限 3600 秒），减少反复等待调用 |
+| 偶尔补看屏幕附近的输出 | `tide wait-idle <id> --with-capture --lines 100` |
+| 打断前台任务并查看结果 | `tide send-key <id> Ctrl+C --wait-idle --with-capture` |
+| 只查看当前画面 | `tide capture <id>`；需要纯文本时加 `--plain-text` |
+| 结束整个托管会话 | `tide close <id>` |
+
+`--with-command` 接收一个加引号的单行命令，先等待启动画面连续 3 秒不变（最多 30 秒），再发送文本并在 150 ms 后发送 Enter。搭配的 `--wait-idle`、`--idle-time`、`--timeout`、`--with-capture`、`--lines` 复用 `send` 的语义，作用于提交命令之后；所有选项放在 `-- shell-args...` 之前。画面安静不保证提示符就绪，启动文件需要交互时仍应分步检查。启动等待超时不发送命令，返回会话信息和 `error`，退出码 1；后续失败也保留会话 ID。成功返回原会话字段及 `written`、`enterWritten` 和所请求的 `wait` / `capture`。
+
+不带 `--with-command` 的 `launch` 返回的是会话已注册，随后用 `wait-idle <id> --with-capture` 检查启动画面。超时的退出码 3 不会停止目标，仍应读取返回的画面，再决定继续等、处理提示或结束任务。结束整个 shell 才使用 `close`。
+
+**频繁抓取长输出或滚屏查历史，通常意味着该换一种工具使用方式。** Tide 主要用于与可见的交互式终端协作、检查当前画面和处理输入提示。对于构建日志、测试结果、批量命令输出等，优先使用 Bash / Shell 执行工具或其他适合的工具，将输出重定向到文件，再用 Read 按需读取，或用 grep / rg 搜索。例如在 Bash 中执行 `your-command > output.log 2>&1`，再执行 `rg -n 'error|failed' output.log`。需要同时在终端查看时可用 `tee`。`--lines` 和 `scroll` 用于偶尔补看上下文或操作 TUI；支持这些能力，不代表推荐把反复抓屏、滚屏当作日志分析流程。
+
+`list` 和 `info` 还返回实时活动信息：`idleForMs` 是当前画面持续未变化的毫秒数；`lastOutputAt` 是最后收到 PTY 输出的 UTC ISO 时间，尚无输出时为 `null`。文本、尺寸或活动缓冲区变化会重置 idle，重复重绘、颜色、标题和光标变化不会，但任何非空输出都会更新 `lastOutputAt`。无输出时 idle 从屏幕初始化开始计时，查询和抓屏不重置计时。可先用 `list` 筛选长时间安静的会话，再抓屏判断；这些字段不表示任务完成、故障或需要介入。旧宿主可能不包含这两个字段，新开会话后生效。
 
 Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参数关闭 MSYS 路径转换，避免 `/help` 被改成 `D:/.../Git/help`。引号本身不能阻止这种转换。PowerShell 可直接 `node dist/tide.mjs ...`；在 Git Bash 直接调用 Node 时，文本命令需要 `MSYS2_ARG_CONV_EXCL='*' node dist/tide.mjs send ...`。
 
@@ -44,7 +66,8 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | 命令 | 行为 |
 | --- | --- |
 | `run [--shell executable] [--cwd directory] [-- shell-args...]` | 在现有终端托管 shell |
-| `launch [--shell executable] [--cwd directory] [-- shell-args...]` | 新开可见窗口，注册后返回会话信息 |
+| `launch [--shell executable] [--cwd directory] [--with-command text \| --profile label] [--wait-idle] [--with-capture] [-- shell-args... \| -- <bin-args...>]` | 新开可见窗口；可自动发送命令、Enter，并等待和返回画面 |
+| `profiles` | 列出 `.tide/launch-profiles.json` 里的 label、描述、env key 数量 |
 | `list` | 列出本机当前托管的 shell 会话，不扫描 CLI 历史 |
 | `info <id>` | 返回 Tide ID、PID、shell、目录等进程信息 |
 | `send <id> <text>` | 写入文本；加 `--with-enter` 在文本后发送回车 |
@@ -53,7 +76,7 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | `scroll <id> up\|down [--steps N]` | 向支持鼠标的 TUI 发送滚轮事件 |
 | `resize <id> --cols N --rows N` | 请求外层窗口调整尺寸，返回实际尺寸 |
 | `capture <id> [--lines N] [--plain-text]` | 获取解析后的终端画面 |
-| `wait-idle <id> [--idle-time seconds] [--timeout seconds]` | 等待画面连续不变，或到达超时 |
+| `wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-capture]` | 等待画面连续不变，或到达超时，可同时返回画面 |
 | `close <id>` | 结束该托管 shell 和会话；不是 CLI 回合打断 |
 | `plugins <id>` | 查看插件匹配结果、扩展命令和插件错误 |
 | `plugin <id> <plugin> <command> [args...]` | 调用匹配的插件命令 |
@@ -80,16 +103,20 @@ tide send-key 5fefa Alt+b
 
 ```bash
 tide send 5fefa '/help' --with-enter --wait-idle --with-capture
-tide send-key 5fefa Enter --wait-idle --idle-time 2 --timeout 60 --with-capture
+tide send-key 5fefa Enter --wait-idle --idle-time 3 --timeout 60 --with-capture
 ```
 
 执行顺序为发送、可选等待、可选抓屏；JSON 保留 `id`、`written`，按选项增加 `wait`（等待结果）和 `capture`（完整快照）。`--idle-time`、`--timeout` 必须与 `--wait-idle` 一起使用，默认值和独立等待命令相同。等待超时仍执行请求的抓屏，退出码为 3。只加 `--with-capture` 会立即抓屏，可能尚未看到程序响应；`send` 默认不提交，加 `--with-enter` 后先发送文本，短暂停顿后发送一次 Enter，再等待和抓屏。成功响应增加 `enterWritten: true`，仅表示回车已写入；回车失败保留 `written: true` 和 `error.stage: "send-key"`，需先检查画面再决定是否重试。文本是 ID 后的第一个参数，即使内容恰好为 `--wait-idle` 也按原文发送。`--stdin` 后同样可追加选项。
 
 发送确认后若等待或抓屏失败，仍返回 `written: true`，并附带 `error: {stage, message}`、stderr 错误和退出码 1，避免把观察失败误认为输入未送达。这些步骤不独占终端；其他人或 Agent 仍能同时输入。
 
-`wait-idle` 默认从调用时开始观察，画面连续 2 秒不变返回 `idle: true`（退出码 0），最多等待 30 秒；超时返回 `idle: false`（退出码 3）。两个参数单位为秒，支持小数，上限 3600 秒；`--idle-time` 必须大于 0，`--timeout 0` 表示立即超时。它比较解析后的屏幕文本、尺寸和缓冲区类型，忽略重复绘制相同内容、颜色码和标题变化，不读取历史空闲时间。
+`wait-idle` 默认从调用时开始观察，画面连续 3 秒不变返回 `idle: true`（退出码 0），最多等待 30 秒；超时返回 `idle: false`（退出码 3）。两个参数单位为秒，支持小数，上限 3600 秒；`--idle-time` 必须大于 0，`--timeout 0` 表示立即超时。它比较解析后的屏幕文本、尺寸和缓冲区类型，忽略重复绘制相同内容、颜色码和标题变化，不读取历史空闲时间。
 
-画面安静不等于任务完成或输入框已就绪；需要随后 `capture` 判断，加载中的程序也可能暂时无输出。等待不重发输入、不停止目标，调用连接断开后停止这次观察。
+独立等待也可组合抓屏：`tide wait-idle <id> --idle-time 3 --timeout 30 --with-capture`。空闲或超时后均抓取画面，在原有 `id`、`idle`、`elapsedMs`、`idleForMs` 字段旁增加 `capture` 完整快照；超时仍返回退出码 3。抓屏失败时保留等待结果，增加 `error: {stage: "capture", message}`，退出码为 1。
+
+所有组合抓屏（`send`、`send-key`、`scroll`、`resize`、`wait-idle`）都可加 `--lines N`，与独立 `capture --lines N` 相同，范围 1..2000，须与 `--with-capture` 一起使用。它只控制返回的抓屏范围，等待仍比较整个当前画面。默认返回当前屏幕；全屏 TUI 通常没有历史滚动区。组合操作保留 JSON 中的执行结果和错误，纯文本输出使用独立 `capture --plain-text`。
+
+画面安静不等于任务完成或输入框已就绪；需要检查返回的 `capture` 或另行抓屏，加载中的程序也可能暂时无输出。等待不重发输入、不停止目标，调用连接断开后停止这次观察。
 
 ## 终端和环境
 
@@ -115,15 +142,100 @@ tide scroll 5fefa down --x 30 --y 10 --with-capture
 tide resize 5fefa --cols 120 --rows 35 --wait-idle --with-capture
 ```
 
-`scroll` 的步数默认 3（1..100），不等于文本行数；位置是从 1 开始的屏幕列、行，默认屏幕中央。仅支持前台应用启用的 SGR 单元格鼠标协议，不支持时明确报错，不自动换成方向键。滚动改变用户和 Agent 共享的应用视图；普通 shell 历史使用 `capture --lines`。
+`scroll` 的步数默认 3（1..100），不等于文本行数；位置是从 1 开始的屏幕列、行，默认屏幕中央。仅支持前台应用启用的 SGR 单元格鼠标协议，不支持时明确报错，不自动换成方向键。滚动改变用户和 Agent 共享的应用视图；普通 shell 历史偶尔可用 `capture --lines` 补看，频繁查阅应改用文件输出和 Read / grep / rg。
 
 `resize` 要求列数 20..500、行数 5..200，最多等 3 秒确认外层实际尺寸；PTY 和屏幕副本跟随外层，不强制制造内部尺寸差异。返回 `requested`、`actual`、`applied`，未达到目标时退出码为 3，仍可等待和抓屏。终端不支持、最大化、分屏或屏幕边界可能影响结果；请求超时不代表终端不会稍后处理。用户后续手动拉窗口会继续正常同步。已验证本机 Windows Terminal，其他终端不保证支持。
+
+## 启动 profile
+
+`tide launch --profile <label>` 一步完成"起 session + 切 env + 跑命令"，免去先开 bash 查 cwd、再 `ccs`、再 `claude` 的几次往返。配置文件落在 tide 自己的 `.tide/launch-profiles.json`，跟 home-scripts / `ccs` 解耦。
+
+```json
+{
+  "profiles": [
+    {
+      "label": "minimax",
+      "description": "MiniMAX via official API",
+      "commands": [
+        "claude --dangerously-skip-permissions"
+      ],
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "sk-cp-...",
+        "ANTHROPIC_MODEL": "MiniMax-M3[1m]"
+      }
+    },
+    {
+      "label": "deepseek-flash",
+      "description": "Deepseek flash",
+      "commands": [
+        "claude --dangerously-skip-permissions"
+      ],
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "sk-...",
+        "ANTHROPIC_MODEL": "deepseek-flash"
+      }
+    },
+    {
+      "label": "codex-ark",
+      "description": "Codex via 火山方舟",
+      "commands": [
+        "codex --yolo"
+      ],
+      "env": {
+        "OPENAI_BASE_URL": "https://ark.cn-beijing.volces.com/api/coding",
+        "OPENAI_API_KEY": "..."
+      }
+    },
+    {
+      "label": "setup-then-run",
+      "description": "先 git pull 再启动 claude,适合早上开工场景",
+      "commands": [
+        "git pull",
+        "claude --dangerously-skip-permissions"
+      ],
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "sk-..."
+      }
+    }
+  ]
+}
+```
+
+常用命令：
+
+```bash
+# 列出可用 profile(label + 描述 + command + commands + env key 数量)
+tide profiles
+
+# 一步: 起新 session + 切到 minimax + cd 进 /d/foo + 启动 claude
+tide launch --profile minimax --cwd /d/foo
+
+# 透传额外参数给最后一条命令
+tide launch --profile minimax --cwd /d/foo -- --model claude-sonnet-4-20250514
+
+# 连续跑 git pull + claude
+tide launch --profile setup-then-run --cwd /d/foo
+
+# 不带 --profile 时,行为和原来一样 —— 裸起 bash,什么也不发
+tide launch --cwd /d/foo
+```
+
+label 规则: 匹配 `[a-zA-Z0-9_-]+`，大小写不敏感，必须唯一。`commands` 是非空字符串数组,每条是一行 shell 命令,会用 shell-quote 规则拆词(单/双引号保留空格,空格切分);按顺序用 `;` 连接,前一条失败不阻塞后一条。`--` 后面的实参会接到最后一条命令上(覆盖式追加)。`--profile` 与 `--with-command` 互斥。launch 完成后 JSON 多了几个 profile 字段:
+- `profile`: 选中的 label
+- `index`: profile 在配置数组里的位置
+- `command`: 第一条 command 的 argv[0](二进制名,如 `claude`)
+- `commands`: 完整命令列表,每条已 join 成字符串(便于直接看跑了什么)
+
+缺失或非法配置时报错带最小模板，便于新用户上手。配置路径默认 `${TIDE_STATE_DIR}/launch-profiles.json`，可用 `TIDE_LAUNCH_PROFILES=<path>` 覆盖。secret 以明文存放在 JSON 中（与 `.claudecode-config` 一致），按需 `chmod 600`。
 
 ## Plugin
 
 通过 `.tide/plugins.json` 显式加载插件，提供 `detect`、扩展命令、可选 `start` 和输出变化订阅。恢复插件复用同一套 `send`、`sendKey`，不使用独立投递路径。
 
-[插件契约和示例](docs/plugins.md)。内置可选的 `codex-resume` 和 `claude-code-resume`，通过 `.tide/plugins.json` 启用，重开会话生效：
+[插件契约和示例](docs/plugins.md)。内置可选的 `codex-resume`、`claude-code-resume`，通过 `.tide/plugins.json` 启用，重开会话生效：
 
 ```json
 {"plugins":["codex-resume","claude-code-resume"]}
@@ -136,7 +248,7 @@ tide plugin 5fefa claude-code-resume check
 tide plugin 5fefa claude-code-resume disable
 ```
 
-插件支持限额和 API 连接中断；只处理最新响应明确中断且输入框为空的窗口。最终错误画面默认需连续稳定 3 分钟，CLI 仍在重试、出现新回复或用户输入时不会接管，`check` 也不能绕过缓冲。Codex 额度通过 App Server 查询，网络中断用 `codex exec --ephemeral` 独立探测；Claude 用 `claude -p` JSON ping/pong 探测。确认成功后才向原窗口发送继续，未恢复时每 5 分钟重查。`status` 只读。配置、限制和验证范围见 [中断恢复插件](docs/resume-plugins.md)。
+恢复插件支持限额和 API 连接中断；只处理最新响应明确中断且输入框为空的窗口。最终错误画面默认需连续稳定 3 分钟，CLI 仍在重试、出现新回复或用户输入时不会接管，`check` 也不能绕过缓冲。Codex 额度通过 App Server 查询，网络中断用 `codex exec --ephemeral` 独立探测；Claude 用 `claude -p` JSON ping/pong 探测。确认成功后才向原窗口发送继续，未恢复时每 5 分钟重查。`status` 只读。配置、限制和验证范围见 [中断恢复插件](docs/resume-plugins.md)。
 
 ## 验证与迁移
 
@@ -147,6 +259,7 @@ src/
   cli/                      命令解析与帮助
   session/                  会话宿主、启动、登记与 IPC
   terminal/                 屏幕渲染、按键、shell 与 idle 检测
+  profile-config/           启动 profile 加载、校验、shell 命令生成
   plugins/
     runtime.ts              插件契约、加载与生命周期
     codex-resume/           Codex 探测与恢复入口

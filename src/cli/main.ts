@@ -3,9 +3,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { runSession } from "../session/host.js";
 import { launchSession, consumeLaunch } from "../session/launch.js";
 import { liveSessions, requestSession } from "../session/ipc.js";
-import { errorMessage, type ShellOptions, type Snapshot, type IdleResult, type Request } from "../session/types.js";
+import { stateDirectory } from "../session/registry.js";
+import { errorMessage, type SessionInfo, type ShellOptions, type Snapshot, type IdleResult, type Request } from "../session/types.js";
 import { validateWait } from "../terminal/idle.js";
 import { validateSize } from "../terminal/resize.js";
+import { buildLaunchShellCommand, findProfile, loadProfiles, type ProfileEntry } from "../profile-config/index.js";
 
 import { commandHelp, help } from "./help.js";
 
@@ -22,17 +24,41 @@ function shellOptions(args: string[]): ShellOptions {
   return options;
 }
 
+type AugmentedSession = SessionInfo & { profile?: string; index?: number; command?: string; commands?: string[] };
+
+// Adds profile identity fields for JSON output. `command` (the binary name)
+// is omitted when the first command's argv is empty; this is only possible
+// when a profile's commands array is malformed, since loadProfiles rejects it.
+function augmentedSession(info: SessionInfo, profile: ProfileEntry): AugmentedSession {
+  const first = profile.commands[0]?.[0];
+  return {
+    ...info,
+    profile: profile.label,
+    index: profile.index,
+    commands: profile.commands.map((argv) => argv.join(" ")),
+    ...(first === undefined ? {} : { command: first }),
+  };
+}
+
 function expectCount(args: string[], minimum: number, maximum = minimum) {
   if (args.length < minimum || args.length > maximum) throw Error("Invalid arguments; use tide --help");
 }
 
+function captureLines(raw: string | undefined) {
+  const lines = Number(raw);
+  if (!Number.isInteger(lines) || lines < 1 || lines > 2000) throw Error("--lines must be 1..2000");
+  return lines;
+}
+
 function afterSendOptions(args: string[], allowEnter = false) {
-  let wait = false, capture = false, enter = false, idleTime = 2, timeout = 30, timing = false;
+  let wait = false, capture = false, enter = false, idleTime = 3, timeout = 30, timing = false;
+  let lines: number | undefined;
   for (let i = 0; i < args.length; i++) {
     const name = args[i];
     if (name === "--wait-idle") wait = true;
     else if (name === "--with-enter" && allowEnter) enter = true;
     else if (name === "--with-capture") capture = true;
+    else if (name === "--lines") lines = captureLines(args[++i]);
     else if (name === "--idle-time" || name === "--timeout") {
       const raw = args[++i];
       if (!raw?.trim()) throw Error(`${name} needs seconds`);
@@ -41,14 +67,15 @@ function afterSendOptions(args: string[], allowEnter = false) {
     } else throw Error(`Unknown operation option: ${name}; use tide help <command>`);
   }
   if (timing && !wait) throw Error("--idle-time and --timeout require --wait-idle");
+  if (lines !== undefined && !capture) throw Error("--lines requires --with-capture");
   validateWait(idleTime, timeout);
-  return { wait, capture, enter, idleTime, timeout };
+  return { wait, capture, enter, idleTime, timeout, lines };
 }
 
-async function sendAndObserve(id: string, request: Extract<Request, { command: "send" | "send-key" | "scroll" | "resize" }>, options: ReturnType<typeof afterSendOptions>) {
+async function sendAndObserve(id: string, request: Extract<Request, { command: "send" | "send-key" | "scroll" | "resize" }>, options: ReturnType<typeof afterSendOptions>, launched?: SessionInfo) {
   const result = await requestSession<{ id: string; written?: true; applied?: boolean }>(id, request);
   if (result.applied === false) process.exitCode = 3;
-  const output: typeof result & { enterWritten?: true; wait?: IdleResult; capture?: Snapshot; error?: { stage: string; message: string } } = { ...result };
+  const output: typeof result & { enterWritten?: true; wait?: IdleResult; capture?: Snapshot; error?: { stage: string; message: string } } = { ...launched, ...result };
   let stage = "send-key";
   try {
     // Pin follow-up requests to the acknowledged full ID, never re-resolve a prefix.
@@ -64,7 +91,7 @@ async function sendAndObserve(id: string, request: Extract<Request, { command: "
       if (!output.wait.idle) process.exitCode = 3;
     }
     stage = "capture";
-    if (options.capture) output.capture = await requestSession<Snapshot>(result.id, { command: "capture" });
+    if (options.capture) output.capture = await requestSession<Snapshot>(result.id, { command: "capture", ...(options.lines === undefined ? {} : { lines: options.lines }) });
   } catch (error) {
     output.error = { stage, message: errorMessage(error) };
     console.error(`Operation was acknowledged; ${stage} failed. Do not resend automatically: ${output.error.message}`);
@@ -80,9 +107,79 @@ async function main() {
   if (args.length === 1 && ["--help", "-h"].includes(args[0]!)) { console.log(help(command)); return; }
   // Native terminal handles may remain referenced after shell exit on Windows.
   // runSession has already stopped plugins, unregistered IPC and flushed the terminal.
-  if (command === "__host") { expectCount(args, 1); process.exit(await runSession(consumeLaunch(args[0]!), args[0])); }
+  if (command === "__host") { if (args.length !== 1 && args.length !== 2) throw Error("Invalid terminal launch arguments"); process.exit(await runSession(consumeLaunch(args[0]!, args[1]), args[0])); }
   if (command === "run") { process.exit(await runSession(shellOptions(args))); }
-  if (command === "launch") { print(await launchSession(shellOptions(args))); return; }
+  if (command === "launch") {
+    const shellArgs: string[] = [], observation: string[] = [];
+    let text: string | undefined;
+    let profile: ProfileEntry | undefined;
+    let binArgs: string[] = [];
+    const profileCache = (process.env.TIDE_LAUNCH_PROFILES || args.some((arg) => arg === "--profile"))
+      ? loadProfiles(stateDirectory())
+      : { path: "", profiles: [] };
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!;
+      if (arg === "--") {
+        if (profile) binArgs = args.slice(i + 1);
+        else shellArgs.push(...args.slice(i));
+        break;
+      }
+      if (arg === "--with-command") {
+        if (text !== undefined) throw Error("--with-command may only be supplied once");
+        if (profile !== undefined) throw Error("--with-command cannot combine with --profile");
+        text = args[++i];
+        if (!text?.trim() || text.startsWith("--")) throw Error("--with-command needs a command");
+      } else if (arg === "--profile") {
+        if (profile !== undefined) throw Error("--profile may only be supplied once");
+        if (text !== undefined) throw Error("--profile cannot combine with --with-command");
+        const label = args[++i];
+        if (!label || label.startsWith("--")) throw Error("--profile needs a label");
+        profile = findProfile(profileCache.profiles, label) ?? undefined;
+        if (!profile) {
+          const list = profileCache.profiles.map((p) => `  ${p.index}. ${p.label}${p.description ? ` — ${p.description}` : ""}`).join("\n");
+          throw Error(`Unknown profile: ${label}\nLoaded from ${profileCache.path}\nAvailable:\n${list}`);
+        }
+      } else if (arg === "--shell" || arg === "--cwd") {
+        shellArgs.push(arg);
+        if (args[i + 1] !== undefined) shellArgs.push(args[++i]!);
+      } else {
+        observation.push(arg);
+        if (["--idle-time", "--timeout", "--lines"].includes(arg) && args[i + 1] !== undefined) observation.push(args[++i]!);
+      }
+    }
+    const shell = shellOptions(shellArgs);
+    const options = afterSendOptions(observation);
+    if (profile) {
+      const cwd = shell.cwd;
+      text = buildLaunchShellCommand(profile, profileCache.profiles, binArgs, cwd);
+    }
+    if (text === undefined && observation.length) throw Error("Launch observation options require --with-command or --profile");
+    if (text !== undefined && /[\x00-\x1f\x7f-\x9f]/.test(text)) throw Error("--with-command requires a single line without control characters");
+    const launched = await launchSession(shell);
+    if (text === undefined) { print(launched); return; }
+    const launchedForPrint = profile ? augmentedSession(launched, profile) : launched;
+    let stage = "startup";
+    try {
+      const startup = await requestSession<IdleResult>(launched.id, { command: "wait-idle", idleTime: 3, timeout: 30 });
+      if (!startup.idle) throw Error("Startup screen did not settle within 30 seconds; command was not sent");
+      stage = "send";
+      await sendAndObserve(launched.id, { command: "send", text }, { ...options, enter: true }, launchedForPrint);
+    } catch (error) {
+      print({ ...launchedForPrint, error: { stage, message: errorMessage(error) } });
+      console.error("Session was launched; " + stage + " failed. Inspect this session before retrying: " + errorMessage(error));
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (command === "profiles") {
+    expectCount(args, 0);
+    const loaded = loadProfiles(stateDirectory());
+    print({
+      path: loaded.path,
+      profiles: loaded.profiles.map((p) => ({ index: p.index, label: p.label, description: p.description, command: p.commands[0]?.[0], commands: p.commands.map((argv) => argv.join(" ")), envKeyCount: Object.keys(p.env).length })),
+    });
+    return;
+  }
   if (command === "list") { expectCount(args, 0); print((await liveSessions()).map(({ info }) => info)); return; }
   const [id, ...rest] = args;
   if (!id) throw Error(`${command} requires a session ID`);
@@ -131,8 +228,7 @@ async function main() {
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === "--plain-text") plain = true;
         else if (rest[i] === "--lines") {
-          lines = Number(rest[++i]);
-          if (!Number.isInteger(lines) || lines < 1 || lines > 2000) throw Error("--lines must be 1..2000");
+          lines = captureLines(rest[++i]);
         } else throw Error(`Unknown capture option: ${rest[i]}`);
       }
       const snapshot = await requestSession<Snapshot>(id, { command, ...(lines === undefined ? {} : { lines }) });
@@ -140,17 +236,32 @@ async function main() {
       break;
     }
     case "wait-idle": {
-      let idleTime = 2, timeout = 30;
+      let idleTime = 3, timeout = 30, capture = false;
+      let lines: number | undefined;
       for (let i = 0; i < rest.length; i++) {
         const name = rest[i];
+        if (name === "--with-capture") { capture = true; continue; }
+        if (name === "--lines") { lines = captureLines(rest[++i]); continue; }
         if (name !== "--idle-time" && name !== "--timeout") throw Error(`Unknown wait-idle option: ${name}`);
         const raw = rest[++i];
         if (!raw?.trim()) throw Error(`${name} needs seconds`);
         if (name === "--idle-time") idleTime = Number(raw); else timeout = Number(raw);
       }
       validateWait(idleTime, timeout);
+      if (lines !== undefined && !capture) throw Error("--lines requires --with-capture");
       const result = await requestSession<IdleResult>(id, { command, idleTime, timeout });
-      print(result); if (!result.idle) process.exitCode = 3;
+      if (!result.idle) process.exitCode = 3;
+      const output: IdleResult & { capture?: Snapshot; error?: { stage: string; message: string } } = { ...result };
+      if (capture) {
+        try {
+          output.capture = await requestSession<Snapshot>(result.id, { command: "capture", ...(lines === undefined ? {} : { lines }) });
+        } catch (error) {
+          output.error = { stage: "capture", message: errorMessage(error) };
+          console.error(`Capture after waiting failed: ${output.error.message}`);
+          process.exitCode = 1;
+        }
+      }
+      print(output);
       break;
     }
     case "info": case "close": case "plugins": expectCount(rest, 0); print(await requestSession(id, { command })); break;
