@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { runSession } from "../session/host.js";
 import { launchSession, consumeLaunch } from "../session/launch.js";
 import { liveSessions, requestSession } from "../session/ipc.js";
 import { errorMessage, type ShellOptions, type Snapshot, type IdleResult, type Request } from "../session/types.js";
 import { validateWait } from "../terminal/idle.js";
+import { validateSize } from "../terminal/resize.js";
 
 import { commandHelp, help } from "./help.js";
 
@@ -24,30 +26,39 @@ function expectCount(args: string[], minimum: number, maximum = minimum) {
   if (args.length < minimum || args.length > maximum) throw Error("Invalid arguments; use tide --help");
 }
 
-function afterSendOptions(args: string[]) {
-  let wait = false, capture = false, idleTime = 2, timeout = 30, timing = false;
+function afterSendOptions(args: string[], allowEnter = false) {
+  let wait = false, capture = false, enter = false, idleTime = 2, timeout = 30, timing = false;
   for (let i = 0; i < args.length; i++) {
     const name = args[i];
     if (name === "--wait-idle") wait = true;
+    else if (name === "--with-enter" && allowEnter) enter = true;
     else if (name === "--with-capture") capture = true;
     else if (name === "--idle-time" || name === "--timeout") {
       const raw = args[++i];
       if (!raw?.trim()) throw Error(`${name} needs seconds`);
       if (name === "--idle-time") idleTime = Number(raw); else timeout = Number(raw);
       timing = true;
-    } else throw Error(`Unknown send option: ${name}; put options after the text/keys`);
+    } else throw Error(`Unknown operation option: ${name}; use tide help <command>`);
   }
   if (timing && !wait) throw Error("--idle-time and --timeout require --wait-idle");
   validateWait(idleTime, timeout);
-  return { wait, capture, idleTime, timeout };
+  return { wait, capture, enter, idleTime, timeout };
 }
 
-async function sendAndObserve(id: string, request: Extract<Request, { command: "send" | "send-key" }>, options: ReturnType<typeof afterSendOptions>) {
-  const result = await requestSession<{ id: string; written: true }>(id, request);
-  const output: typeof result & { wait?: IdleResult; capture?: Snapshot; error?: { stage: string; message: string } } = { ...result };
-  let stage = "wait-idle";
+async function sendAndObserve(id: string, request: Extract<Request, { command: "send" | "send-key" | "scroll" | "resize" }>, options: ReturnType<typeof afterSendOptions>) {
+  const result = await requestSession<{ id: string; written?: true; applied?: boolean }>(id, request);
+  if (result.applied === false) process.exitCode = 3;
+  const output: typeof result & { enterWritten?: true; wait?: IdleResult; capture?: Snapshot; error?: { stage: string; message: string } } = { ...result };
+  let stage = "send-key";
   try {
     // Pin follow-up requests to the acknowledged full ID, never re-resolve a prefix.
+    if (options.enter) {
+      // Let the foreground TUI process pasted text before submitting it.
+      await sleep(150);
+      await requestSession(result.id, { command: "send-key", keys: ["Enter"] });
+      output.enterWritten = true;
+    }
+    stage = "wait-idle";
     if (options.wait) {
       output.wait = await requestSession<IdleResult>(result.id, { command: "wait-idle", idleTime: options.idleTime, timeout: options.timeout });
       if (!output.wait.idle) process.exitCode = 3;
@@ -56,7 +67,7 @@ async function sendAndObserve(id: string, request: Extract<Request, { command: "
     if (options.capture) output.capture = await requestSession<Snapshot>(result.id, { command: "capture" });
   } catch (error) {
     output.error = { stage, message: errorMessage(error) };
-    console.error(`Input was written; ${stage} failed. Do not resend automatically: ${output.error.message}`);
+    console.error(`Operation was acknowledged; ${stage} failed. Do not resend automatically: ${output.error.message}`);
     process.exitCode = 1;
   }
   print(output);
@@ -76,9 +87,34 @@ async function main() {
   const [id, ...rest] = args;
   if (!id) throw Error(`${command} requires a session ID`);
   switch (command) {
+    case "scroll": case "resize": {
+      const values: Record<string, number> = {};
+      const observation: string[] = [];
+      const names = command === "scroll" ? ["--steps", "--x", "--y"] : ["--cols", "--rows"];
+      for (let i = command === "scroll" ? 1 : 0; i < rest.length; i++) {
+        const arg = rest[i]!;
+        if (names.includes(arg)) {
+          const raw = rest[++i];
+          if (!raw?.trim() || !Number.isInteger(Number(raw))) throw Error(`${arg} requires an integer`);
+          values[arg] = Number(raw);
+        } else observation.push(arg);
+      }
+      const options = afterSendOptions(observation);
+      if (command === "scroll") {
+        const direction = rest[0], steps = values["--steps"] ?? 3;
+        if (direction !== "up" && direction !== "down") throw Error("scroll requires up or down");
+        if (steps < 1 || steps > 100) throw Error("--steps must be 1..100");
+        await sendAndObserve(id, { command, direction, steps, ...(values["--x"] === undefined ? {} : { x: values["--x"] }), ...(values["--y"] === undefined ? {} : { y: values["--y"] }) }, options);
+      } else {
+        const cols = values["--cols"]!, rows = values["--rows"]!;
+        validateSize(cols, rows);
+        await sendAndObserve(id, { command, cols, rows }, options);
+      }
+      break;
+    }
     case "send": {
       expectCount(rest, 1, Infinity);
-      const options = afterSendOptions(rest.slice(1));
+      const options = afterSendOptions(rest.slice(1), true);
       if (rest[0] === "--stdin" && process.stdin.isTTY) throw Error("--stdin requires piped input");
       const text = rest[0] === "--stdin" ? readFileSync(0, "utf8") : rest[0]!;
       await sendAndObserve(id, { command, text }, options); break;

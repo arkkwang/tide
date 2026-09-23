@@ -7,10 +7,18 @@ export class Screen {
   private readonly terminal: xterm.Terminal;
   private pending = Promise.resolve();
   private title = "";
+  private readonly mouseEncodings = new Set<number>();
 
   constructor(cols: number, rows: number) {
     this.terminal = new xterm.Terminal({ cols, rows, scrollback: MAX_CAPTURE_LINES, allowProposedApi: true });
     this.terminal.onTitleChange((title) => { this.title = title; });
+    for (const final of ["h", "l"]) this.terminal.parser.registerCsiHandler({ prefix: "?", final }, (params) => {
+      for (const param of params) if (typeof param === "number" && [1005, 1006, 1015, 1016].includes(param)) {
+        if (final === "h") this.mouseEncodings.add(param); else this.mouseEncodings.delete(param);
+      }
+      return false;
+    });
+    this.terminal.parser.registerEscHandler({ final: "c" }, () => { this.mouseEncodings.clear(); return false; });
   }
 
   write(data: string): Promise<void> {
@@ -19,6 +27,15 @@ export class Screen {
   }
 
   async modes() { await this.pending; return this.terminal.modes; }
+
+  async scroll(direction: string, steps: number, x?: number, y?: number) {
+    await this.pending;
+    if (!["up", "down"].includes(direction) || !Number.isInteger(steps) || steps < 1 || steps > 100) throw Error("scroll requires up/down and --steps 1..100");
+    const col = x ?? Math.ceil(this.terminal.cols / 2), row = y ?? Math.ceil(this.terminal.rows / 2);
+    if (!Number.isInteger(col) || !Number.isInteger(row) || col < 1 || col > this.terminal.cols || row < 1 || row > this.terminal.rows) throw Error("Scroll coordinates must be 1-based cells inside the current screen");
+    if (["none", "x10"].includes(this.terminal.modes.mouseTrackingMode) || !this.mouseEncodings.has(1006) || this.mouseEncodings.size !== 1) throw Error("Foreground program has not enabled supported SGR mouse scrolling; use capture --lines for shell history or explicit send-key navigation");
+    return `\x1b[<${direction === "up" ? 64 : 65};${col};${row}M`.repeat(steps);
+  }
 
   resize(cols: number, rows: number) { this.terminal.resize(cols, rows); }
 

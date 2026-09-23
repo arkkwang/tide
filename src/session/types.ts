@@ -39,6 +39,8 @@ export type Request =
   | { command: "wait-idle"; idleTime: number; timeout: number }
   | { command: "send"; text: string }
   | { command: "send-key"; keys: string[] }
+  | { command: "scroll"; direction: "up" | "down"; steps: number; x?: number; y?: number }
+  | { command: "resize"; cols: number; rows: number }
   | { command: "plugin"; plugin: string; action: string; args: string[] };
 
 export function errorMessage(error: unknown): string {

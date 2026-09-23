@@ -29,6 +29,51 @@ const shell = `  --shell executable   Override TIDE_SHELL / SHELL / platform def
   Exiting a CLI returns to the same shell/ID; exiting the shell ends the session.`;
 
 export const commandHelp: Record<string, string> = {
+  scroll: `tide scroll <id> up|down [--steps N] [--x N] [--y N] [--wait-idle] [--idle-time N] [--timeout N] [--with-capture]
+
+Send mouse wheel events to the foreground TUI. Requires enabled SGR cell mouse
+reporting. Unsupported modes fail before sending; never substitutes arrow keys.
+This changes the shared application view, not a private Agent viewport.
+${session}
+
+OPTIONS
+  --steps N        Wheel steps, default 3, range 1..100; not a count of text lines.
+  --x N --y N      1-based screen cell, default screen center for each coordinate.
+                  Use a point inside the intended pane in multi-pane applications.
+  Ordinary shell history: use capture --lines N instead of scroll.
+
+${afterSend}
+
+OUTPUT
+  JSON {id, written: true}, plus optional wait/capture. Acknowledges wheel input,
+  not movement: the application may already be at the beginning/end of content.
+EXAMPLE
+  tide scroll abc123 up --steps 5 --wait-idle --with-capture`,
+  resize: `tide resize <id> --cols N --rows N [--wait-idle] [--idle-time N] [--timeout N] [--with-capture]
+
+Request a visible terminal resize through its window-control protocol. The PTY
+and capture follow actual outer dimensions; never forces a different inner size.
+This changes the user's visible window. Later manual resizing takes precedence.
+${session}
+
+OPTIONS
+  --cols N         Required columns, 20..500.
+  --rows N         Required rows, 5..200.
+  Waits up to 3 seconds for the requested size. Terminal support, screen bounds,
+  maximization and split panes may prevent an exact match. No desktop fallback.
+  --wait-idle, --idle-time N, --timeout N, --with-capture observe after resizing.
+  Defaults: 2 quiet seconds, 30 seconds idle timeout. --timeout affects only idle.
+  Capture alone may show a redraw in progress. Idle does not prove task completion.
+
+OUTPUT
+  JSON {id, requested: {cols, rows}, actual: {cols, rows}, applied: boolean}.
+  Already at the requested size succeeds without writing a control sequence.
+  Unconfirmed size: applied=false, exit 3; requested observation still runs.
+  Optional wait/capture fields match send; an observation error retains the resize
+  result and adds error: {stage, message}, exit 1. A timeout is not cancellation:
+  the outer terminal may apply the request later. Inspect before retrying.
+EXAMPLE
+  tide resize abc123 --cols 120 --rows 35 --wait-idle --with-capture`,
   run: `tide run [--shell executable] [--cwd directory] [-- shell-args...]
 
 Host an interactive shell in the current terminal. Requires a real TTY.
@@ -72,16 +117,19 @@ OUTPUT
   ${info}
 EXAMPLE
   tide info abc123`,
-  send: `tide send <id> <text> [--wait-idle] [--idle-time N] [--timeout N] [--with-capture]
+  send: `tide send <id> <text> [--with-enter] [--wait-idle] [--idle-time N] [--timeout N] [--with-capture]
 tide send <id> --stdin [same options]
 
-Fill the current terminal input with literal text. NEVER adds Enter.
+Fill the current terminal input with literal text. No Enter by default.
+Add --with-enter after the text to send Enter before optional waiting/capture.
 First capture the screen to check which program or prompt will receive it.
 Use send-key for keys/chords; backslash escape notation is not decoded.
 ${session}
 
 INPUT
   Quote text as one argument using your calling shell's quoting rules.
+  --with-enter sends one Enter after a short paste-processing pause (150 ms).
+  This is not a readiness check; only use it when the current prompt can submit.
   --stdin reads UTF-8 until EOF. It preserves newlines, including a trailing one.
   Multiline text and tabs require the target to enable bracketed paste; otherwise
   they are rejected. Other control characters are rejected; use send-key.
@@ -93,13 +141,16 @@ INPUT
 ${afterSend}
 
 OUTPUT
-  JSON {id, written: true}: written to the PTY, not submitted or completed.
+  JSON {id, written: true}: text written to the PTY, not proof of completion.
+  With --with-enter, enterWritten: true confirms the Enter write was acknowledged.
+  If Enter fails, written remains true with error.stage=send-key and exit 1;
+  delivery may be uncertain. Inspect the screen before retrying.
   On transport failure, capture before retrying: input may already have arrived.
 EXAMPLES (Bash)
   tide send abc123 'claude'
   tide send-key abc123 Enter
   tide send abc123 '/help'
-  tide send abc123 '/help' --wait-idle --with-capture
+  tide send abc123 '/help' --with-enter --wait-idle --with-capture
   tide send-key abc123 Enter --wait-idle --timeout 60 --with-capture
   printf '%s' 'Explain this function' | tide send abc123 --stdin`,
   "send-key": `tide send-key <id> <key> [keys...] [--wait-idle] [--idle-time N] [--timeout N] [--with-capture]
@@ -234,8 +285,10 @@ COMMANDS
   launch [shell options]          Open a visible terminal; return its session JSON
   list                           Discover live sessions and IDs
   info <id>                      Read shell metadata (not agent/task status)
-  send <id> <text> | --stdin       Fill literal text; NEVER adds Enter
+  send <id> <text> | --stdin       Fill text; --with-enter optionally submits
   send-key <id> <key> [keys...]    Send named keys/chords, e.g. Enter or Ctrl+C
+  scroll <id> up|down [--steps N]  Send wheel events to a mouse-enabled TUI
+  resize <id> --cols N --rows N    Request visible window size; report actual size
   capture <id> [--lines N] [--plain-text]   Read the rendered terminal screen
   wait-idle <id> [--idle-time seconds] [--timeout seconds]   Wait for a quiet screen
   close <id>                      Terminate the hosted shell/session
@@ -249,6 +302,7 @@ AGENT WORKFLOW
   4. tide send-key <id> Enter     Submit only when appropriate for that prompt.
   5. tide wait-idle <id> --idle-time 2 --timeout 30
   6. tide capture <id>            Interpret the screen; continue waiting/interacting.
+  Combine steps 3-6: tide send <id> 'your text' --with-enter --wait-idle --with-capture
   Combine steps 4-6: tide send-key <id> Enter --wait-idle --with-capture
   Both send and send-key support these options after their text/keys. Waiting
   defaults to 2 quiet seconds, 30 seconds maximum; --idle-time/--timeout customize it.

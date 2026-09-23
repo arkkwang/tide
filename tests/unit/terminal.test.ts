@@ -7,6 +7,40 @@ import { Plugins, type TidePlugin } from "../../src/plugins/runtime.ts";
 import { launchCommand } from "../../src/session/launch.ts";
 import type { SessionInfo } from "../../src/session/types.ts";
 import { waitIdle } from "../../src/terminal/idle.ts";
+import { requestResize } from "../../src/terminal/resize.ts";
+
+test("scroll follows mouse modes, validates cells and never falls back to keys", async () => {
+  const screen = new Screen(100, 30);
+  try {
+    await assert.rejects(screen.scroll("up", 1), /SGR/);
+    await screen.write("\x1b[?1000;1006h");
+    assert.equal(await screen.scroll("up", 2), "\x1b[<64;50;15M".repeat(2));
+    assert.equal(await screen.scroll("down", 1, 1, 30), "\x1b[<65;1;30M");
+    await assert.rejects(screen.scroll("up", 0));
+    await assert.rejects(screen.scroll("left", 1));
+    await assert.rejects(screen.scroll("up", 1, 101, 1));
+    await screen.write("\x1b[?1016h");
+    await assert.rejects(screen.scroll("up", 1), /SGR/);
+    await screen.write("\x1b[?1016l\x1b[?1000l");
+    await assert.rejects(screen.scroll("up", 1), /SGR/);
+    await screen.write("\x1b[?1000h\x1bc\x1b[?1000h");
+    await assert.rejects(screen.scroll("up", 1), /SGR/);
+  } finally { screen.dispose(); }
+});
+
+test("resize observes actual dimensions and reports unconfirmed requests without forcing them", async () => {
+  const signal = new AbortController().signal;
+  let actual = { cols: 80, rows: 24 }, writes = 0;
+  const write = (data: string) => { assert.equal(data, "\x1b[8;30;100t"); writes++; actual = { cols: 100, rows: 30 }; };
+  assert.equal((await requestResize(100, 30, () => actual, write, signal)).applied, true);
+  await requestResize(100, 30, () => actual, write, signal);
+  assert.equal(writes, 1);
+  const refused = await requestResize(120, 35, () => actual, () => {}, signal, 0);
+  assert.equal(refused.applied, false); assert.deepEqual(refused.actual, actual);
+  await assert.rejects(requestResize(0, 35, () => actual, write, signal));
+  const abort = new AbortController(); abort.abort();
+  await assert.rejects(requestResize(100, 30, () => actual, write, abort.signal));
+});
 
 test("capture renders split VT sequences, cursor edits, colors and alternate screens", async () => {
   const screen = new Screen(40, 8);

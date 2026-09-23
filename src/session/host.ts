@@ -10,6 +10,8 @@ import { listen } from "./ipc.js";
 import { loadPlugins, Plugins } from "../plugins/runtime.js";
 import { shellCommand } from "../terminal/shell.js";
 import { waitIdle } from "../terminal/idle.js";
+import { enableWindowsVTInput } from "../terminal/windows-input.js";
+import { requestResize } from "../terminal/resize.js";
 import type { Request, SessionInfo, SessionRecord, ShellOptions } from "./types.js";
 
 export async function runSession(options: ShellOptions, id: string = randomUUID()): Promise<number> {
@@ -74,12 +76,23 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
     try { killChild(); } catch {}
   };
   try {
+    process.stdin.setEncoding("utf8"); process.stdin.setRawMode(true);
+    enableWindowsVTInput();
     closeServer = await listen(record, async (request: Request, signal) => {
       switch (request.command) {
         case "info": return info;
         case "capture": return screen.capture(id, request.lines);
         case "wait-idle": return waitIdle(() => screen.capture(id), request.idleTime, request.timeout, signal);
         case "send": await send(request.text); return { id, written: true };
+        case "scroll": await enqueue(async () => child.write(await screen.scroll(request.direction, request.steps, request.x, request.y))); return { id, written: true };
+        case "resize": {
+          let result: Awaited<ReturnType<typeof requestResize>> | undefined;
+          await enqueue(async () => {
+            result = await requestResize(request.cols, request.rows, () => ({ cols: process.stdout.columns, rows: process.stdout.rows }), (data) => { process.stdout.write(data); }, signal);
+            resize();
+          });
+          return { id, ...result };
+        }
         case "send-key": if (!Array.isArray(request.keys)) throw Error("keys must be an array"); await sendKey(...request.keys); return { id, written: true };
         case "plugins": return plugins.list();
         case "plugin":
@@ -92,7 +105,6 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
     registry.write(record); registered = true;
     process.on("exit", emergencyCleanup);
     process.on("SIGTERM", stop); process.on("SIGHUP", stop);
-    process.stdin.setEncoding("utf8"); process.stdin.setRawMode(true);
     process.stdin.on("data", input); process.stdin.on("end", stop); process.stdin.resume();
     process.stdout.on("resize", resize);
     console.error(`[tide] ${id}`);

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { inspectScreen } from "../../src/plugins/recovery/screen.ts";
 import { claudeAvailability } from "../../src/plugins/claude-code-resume/index.ts";
 import { codexAvailability, codexPongAvailability } from "../../src/plugins/codex-resume/index.ts";
-import { ResumeMonitor, PROBE_INTERVAL_MS, RESUME_DELAY_MS, type Availability, type Probe } from "../../src/plugins/recovery/monitor.ts";
-import type { PluginContext } from "../../src/plugins/runtime.ts";
+import { ResumeMonitor, resumePlugin, PROBE_INTERVAL_MS, RESUME_DELAY_MS, type Availability, type Probe } from "../../src/plugins/recovery/monitor.ts";
+import { Plugins, type PluginContext } from "../../src/plugins/runtime.ts";
 import type { Snapshot } from "../../src/session/types.ts";
 
 function screen(body = "● You've hit your limit · resets 8pm", input = "", kind = "claude"): Snapshot {
@@ -28,6 +28,8 @@ test("resume detection uses the latest response and current composer, not old qu
     const shell = screen(undefined, "", kind); shell.text += "\nuser@host $ ";
     assert.equal(inspectScreen(kind, shell).matched, false);
     const busy = screen(undefined, "", kind); busy.text += "\nesc to interrupt";
+    assert.equal(inspectScreen(kind, busy).matched, true);
+    assert.equal(inspectScreen(kind, busy).ready, false);
     assert.equal(inspectScreen(kind, busy).interruption, null);
   }
 });
@@ -45,6 +47,26 @@ test("quota parsers require affirmative recovery evidence", () => {
   assert.equal(claudeAvailability({ ...success, is_error: true, result: "Not logged in" }, 1).allowed, null);
   assert.equal(claudeAvailability({ ...success, result: "API Error: 429", api_error_status: 429 }, 1).allowed, false);
   assert.equal(claudeAvailability({ ...success, result: "Something else" }, 0).allowed, null);
+});
+
+test("running Claude remains manageable without probing or resuming old errors", async () => {
+  let probes = 0;
+  const probe: Probe = async () => { probes++; return { allowed: true, reason: "ok" }; };
+  const f = fixture(probe);
+  const busy = screen(); busy.text += " · esc to interrupt · 29 agents";
+  f.setScreen(busy);
+  const plugins = new Plugins([resumePlugin("claude-code-resume", "claude", probe)], f.context);
+  await plugins.start();
+  try {
+    assert.equal((await plugins.list())[0]!.matched, true);
+    for (const command of ["status", "check", "disable", "enable"]) {
+      await plugins.run("claude-code-resume", command, []);
+    }
+    await f.monitor.observe(true);
+    assert.equal(f.monitor.status().phase, "watching");
+    assert.equal(probes, 0);
+    assert.deepEqual(f.writes, []);
+  } finally { await plugins.dispose(); await f.monitor.dispose(); }
 });
 
 function fixture(probe: Probe, delay = PROBE_INTERVAL_MS, quietMs = 0) {

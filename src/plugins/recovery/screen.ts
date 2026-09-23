@@ -21,9 +21,10 @@ export function inspectScreen(kind: CliKind, snapshot: Snapshot): ResumeScreen {
     : /context left|\? for shortcuts/i.test(footer);
   // A later shell prompt or modal footer means the old CLI prompt is only history.
   const outside = /(?:^|\n)\s*(?:\$|PS [^\n]*>|[^\n]*[#$])\s*$/.test(footer)
-    || /esc to interrupt|esc to cancel|Do you want to|Allow this|Yes,|Enter to confirm/i.test(footer);
+    || /Do you want to|Allow this|Yes,|Enter to confirm/i.test(footer);
+  const busy = /esc to interrupt|esc to cancel/i.test(footer);
   const prefix = prompt.exec(rows[index]!)![0];
-  const ready = branded && !outside && rows[index]!.slice(prefix.length).trim() === "" && (snapshot.cursor
+  const ready = branded && !outside && !busy && rows[index]!.slice(prefix.length).trim() === "" && (snapshot.cursor
     ? snapshot.cursor.row === index && snapshot.cursor.col <= prefix.trimEnd().length + 1
     : rows[index]!.slice(prefix.length).trim() === "");
   let interruption: Interruption | null = null;

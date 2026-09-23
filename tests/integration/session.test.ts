@@ -74,6 +74,23 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     const json = await cli(["capture", short]);
     const plain = await cli(["capture", short, "--plain-text"]);
     assert.equal(json.code, 0); assert.equal(plain.code, 0);
+    const dimensions = JSON.parse(json.out) as Snapshot;
+    const sameSize = await cli(['resize', short, '--cols', String(dimensions.cols), '--rows', String(dimensions.rows), '--with-capture']);
+    assert.equal(sameSize.code, 0, sameSize.err);
+    assert.equal(JSON.parse(sameSize.out).applied, true);
+    assert.equal(JSON.parse(sameSize.out).capture.cols, dimensions.cols);
+    const unsupportedScroll = await cli(['scroll', short, 'up']);
+    assert.equal(unsupportedScroll.code, 1);
+    assert.match(unsupportedScroll.err, /SGR/);
+    // ConPTY may handle XTWINOPS itself; other outer terminals may ignore it.
+    const ignoredResize = await cli(['resize', short, '--cols', '110', '--rows', '32', '--with-capture']);
+    assert([0, 3].includes(ignoredResize.code!), ignoredResize.err);
+    const resized = JSON.parse(ignoredResize.out);
+    assert.equal(resized.applied, resized.actual.cols === 110 && resized.actual.rows === 32);
+    assert.equal(resized.actual.cols, resized.capture.cols);
+    assert.equal(resized.actual.rows, resized.capture.rows);
+    const restored = await cli(['resize', short, '--cols', String(dimensions.cols), '--rows', String(dimensions.rows)]);
+    assert.equal(restored.code, 0, restored.err);
     assert.equal(plain.out, (JSON.parse(json.out) as Snapshot).text + "\n");
     t.diagnostic('send, chord and plain capture passed');
     assert(!plain.out.includes("\x1b"));
@@ -89,6 +106,13 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     const submitted = await cli(['send-key', short, 'Enter', '--wait-idle', '--idle-time', '0.2', '--timeout', '3', '--with-capture']);
     assert.equal(submitted.code, 0, submitted.err);
     assert(JSON.parse(submitted.out).capture.text.includes('COMBINED_SHELL_OK'));
+    for (const piped of [false, true]) {
+      const text = `printf 'ENTER_%s_OK\\n' ${piped ? 'STDIN' : 'TEXT'}`;
+      const result = await cli(['send', short, piped ? '--stdin' : text, '--with-enter', '--wait-idle', '--idle-time', '0.2', '--timeout', '3', '--with-capture'], false, piped ? text : '');
+      assert.equal(result.code, 0, result.err);
+      assert.equal(JSON.parse(result.out).enterWritten, true);
+      assert(JSON.parse(result.out).capture.text.includes(`ENTER_${piped ? 'STDIN' : 'TEXT'}_OK`));
+    }
     const timeoutCapture = await cli(['send-key', short, 'Ctrl+U', '--wait-idle', '--timeout', '0', '--with-capture']);
     assert.equal(timeoutCapture.code, 3);
     assert.equal(JSON.parse(timeoutCapture.out).wait.idle, false);
@@ -105,6 +129,12 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
       ['send', short, 'NEVER_INVALID_INPUT', '--timeout', '1'],
       ['send', short, 'NEVER_INVALID_INPUT', '--wait-idle', '--idle-time', '-1'],
       ['send-key', short, 'Enter', '--with-captur'],
+      ['send-key', short, 'Enter', '--with-enter'],
+      ['send', short, 'NEVER_INVALID_INPUT', '--with-enter', '--bad-option'],
+      ['scroll', short, 'left'],
+      ['scroll', short, 'up', '--steps', '0'],
+      ['resize', short, '--cols', '100'],
+      ['resize', short, '--cols', '100', '--rows', '30', '--with-enter'],
     ]) {
       const invalid = await cli(args);
       assert.equal(invalid.code, 1);
@@ -131,7 +161,8 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     const endedWhileWaiting = await cli(['send-key', b.id, 'Enter', '--wait-idle', '--idle-time', '1', '--timeout', '3', '--with-capture']);
     assert.equal(endedWhileWaiting.code, 1, endedWhileWaiting.out);
     assert.equal(JSON.parse(endedWhileWaiting.out).written, true);
-    assert.equal(JSON.parse(endedWhileWaiting.out).error.stage, 'wait-idle');
+    // Host shutdown can race with either observation request.
+    assert(['wait-idle', 'capture'].includes(JSON.parse(endedWhileWaiting.out).error.stage));
     assert.match(endedWhileWaiting.err, /Do not resend/);
     await requestSession(a.id.slice(0, 8), { command: "close" }, registry);
     t.diagnostic('close acknowledged');

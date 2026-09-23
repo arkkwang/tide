@@ -47,9 +47,11 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | `launch [--shell executable] [--cwd directory] [-- shell-args...]` | 新开可见窗口，注册后返回会话信息 |
 | `list` | 列出本机当前托管的 shell 会话，不扫描 CLI 历史 |
 | `info <id>` | 返回 Tide ID、PID、shell、目录等进程信息 |
-| `send <id> <text>` | 写入文本，不自动按回车 |
+| `send <id> <text>` | 写入文本；加 `--with-enter` 在文本后发送回车 |
 | `send <id> --stdin` | 从管道读取 UTF-8 原文，适合长文本与多行 |
 | `send-key <id> <key> [keys...]` | 顺序发送具名按键或组合键 |
+| `scroll <id> up\|down [--steps N]` | 向支持鼠标的 TUI 发送滚轮事件 |
+| `resize <id> --cols N --rows N` | 请求外层窗口调整尺寸，返回实际尺寸 |
 | `capture <id> [--lines N] [--plain-text]` | 获取解析后的终端画面 |
 | `wait-idle <id> [--idle-time seconds] [--timeout seconds]` | 等待画面连续不变，或到达超时 |
 | `close <id>` | 结束该托管 shell 和会话；不是 CLI 回合打断 |
@@ -77,11 +79,11 @@ tide send-key 5fefa Alt+b
 `send` 和 `send-key` 均支持在文本/按键之后追加 `--wait-idle` 和 `--with-capture`，可单独使用或组合：
 
 ```bash
-tide send 5fefa '/help' --with-capture
+tide send 5fefa '/help' --with-enter --wait-idle --with-capture
 tide send-key 5fefa Enter --wait-idle --idle-time 2 --timeout 60 --with-capture
 ```
 
-执行顺序为发送、可选等待、可选抓屏；JSON 保留 `id`、`written`，按选项增加 `wait`（等待结果）和 `capture`（完整快照）。`--idle-time`、`--timeout` 必须与 `--wait-idle` 一起使用，默认值和独立等待命令相同。等待超时仍执行请求的抓屏，退出码为 3。只加 `--with-capture` 会立即抓屏，可能尚未看到程序响应；`send` 始终不自动提交。文本是 ID 后的第一个参数，即使内容恰好为 `--wait-idle` 也按原文发送。`--stdin` 后同样可追加选项。
+执行顺序为发送、可选等待、可选抓屏；JSON 保留 `id`、`written`，按选项增加 `wait`（等待结果）和 `capture`（完整快照）。`--idle-time`、`--timeout` 必须与 `--wait-idle` 一起使用，默认值和独立等待命令相同。等待超时仍执行请求的抓屏，退出码为 3。只加 `--with-capture` 会立即抓屏，可能尚未看到程序响应；`send` 默认不提交，加 `--with-enter` 后先发送文本，短暂停顿后发送一次 Enter，再等待和抓屏。成功响应增加 `enterWritten: true`，仅表示回车已写入；回车失败保留 `written: true` 和 `error.stage: "send-key"`，需先检查画面再决定是否重试。文本是 ID 后的第一个参数，即使内容恰好为 `--wait-idle` 也按原文发送。`--stdin` 后同样可追加选项。
 
 发送确认后若等待或抓屏失败，仍返回 `written: true`，并附带 `error: {stage, message}`、stderr 错误和退出码 1，避免把观察失败误认为输入未送达。这些步骤不独占终端；其他人或 Agent 仍能同时输入。
 
@@ -93,6 +95,8 @@ tide send-key 5fefa Enter --wait-idle --idle-time 2 --timeout 60 --with-capture
 
 仍使用用户终端显示、手动输入和调整尺寸；内部由 `node-pty` 托管 shell，`@xterm/headless` 维护屏幕副本。后者解析颜色、清屏、光标移动、覆盖和 alternate screen，不通过正则删颜色码来伪造快照。
 
+Windows 宿主在 raw 模式之后启用 VT 输入，让 TUI 的鼠标滚轮、方向键和括号粘贴序列能够透传（包括 Node 20）。启动时通过系统 PowerShell 设置当前控制台输入模式，不常驻额外进程；滚动行为仍由前台 CLI 和终端决定。
+
 默认 shell 按 `--shell`、`TIDE_SHELL`、`SHELL` 选择；Windows 未指定时查找 Git Bash，再使用系统 shell。Bash/zsh/sh/fish 默认交互式 login 参数，PowerShell 加载其常规 profile，也可通过 `--` 显式指定 shell 参数。继承导出的环境变量，启动文件仍由 shell 自己读取；父 shell 中未导出的变量、临时 alias/function 不会自动复制。
 
 子进程继承 `TIDE_SESSION_ID`、`TIDE_STATE_DIR` 和 `TIDE_ENTRY`，可调用 Tide 访问其他会话。macOS Terminal.app 的环境通过一次性本地文件传递，宿主读取后删除。
@@ -100,6 +104,20 @@ tide send-key 5fefa Enter --wait-idle --idle-time 2 --timeout 60 --with-capture
 默认 capture 是当前活动屏幕，`--lines` 可多取滚动缓冲，最大 2000 行。全屏 TUI 的 alternate screen 一般没有普通 shell 的历史滚动区；这不是结构化对话日志。
 
 CLI 退出后仍回到同一个 shell 和 Tide ID；shell 退出或 `close` 后注销会话并返回原终端，不在后台恢复。进程树和窗口强制关闭行为仍受系统及 shell 子进程行为影响。
+
+## 滚动与窗口尺寸
+
+滚动和尺寸调整示例：
+
+```bash
+tide scroll 5fefa up --steps 5 --wait-idle --with-capture
+tide scroll 5fefa down --x 30 --y 10 --with-capture
+tide resize 5fefa --cols 120 --rows 35 --wait-idle --with-capture
+```
+
+`scroll` 的步数默认 3（1..100），不等于文本行数；位置是从 1 开始的屏幕列、行，默认屏幕中央。仅支持前台应用启用的 SGR 单元格鼠标协议，不支持时明确报错，不自动换成方向键。滚动改变用户和 Agent 共享的应用视图；普通 shell 历史使用 `capture --lines`。
+
+`resize` 要求列数 20..500、行数 5..200，最多等 3 秒确认外层实际尺寸；PTY 和屏幕副本跟随外层，不强制制造内部尺寸差异。返回 `requested`、`actual`、`applied`，未达到目标时退出码为 3，仍可等待和抓屏。终端不支持、最大化、分屏或屏幕边界可能影响结果；请求超时不代表终端不会稍后处理。用户后续手动拉窗口会继续正常同步。已验证本机 Windows Terminal，其他终端不保证支持。
 
 ## Plugin
 
