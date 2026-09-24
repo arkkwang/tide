@@ -99,9 +99,10 @@ test("capture renders split VT sequences, cursor edits, colors and alternate scr
 });
 
 test("text does not submit and rejects control sequence injection", () => {
-  assert.equal(encodeText("/help", true), "\x1b[200~/help\x1b[201~");
+  assert.equal(encodeText("/help", true), "/help");
   assert.equal(encodeText("/help", false), "/help");
   assert.equal(encodeText("你好\n第二行", true), "\x1b[200~你好\n第二行\x1b[201~");
+  assert.equal(encodeText("a\tb", true), "\x1b[200~a\tb\x1b[201~");
   assert.throws(() => encodeText("a\nb", false), /bracketed paste/);
   assert.throws(() => encodeText("\x1b[201~rm", true), /send-key/);
   assert.throws(() => encodeText("\x9b31m", true), /send-key/);
@@ -136,9 +137,9 @@ test("plugins reuse the input channel, re-detect before writes, and stop observe
   const writes: string[] = [];
   let active = true, outputs = 0, cleaned = 0;
   const plugin: TidePlugin = {
-    id: "fixture", detect: () => active,
+    id: "fixture", name: "Fixture plugin", detect: () => active,
     start(context) { const off = context.onOutput(() => { outputs++; }); return () => { cleaned++; off(); }; },
-    commands: { resume: { description: "Resume through core", async run(context) { await context.send("continue"); await context.sendKey("Enter"); return "sent"; } } },
+    commands: { resume: { description: "Resume through core", async run(args, context) { assert.deepEqual(args, []); await context.send!("continue"); await context.sendKey!("Enter"); return "sent"; } } },
   };
   const plugins = new Plugins([plugin], { session, capture: (lines) => screen.capture("id", lines), send: async (text) => { writes.push(text); }, sendKey: async (...keys) => { writes.push(...keys); } });
   try {

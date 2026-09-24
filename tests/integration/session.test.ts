@@ -63,6 +63,11 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     assert.equal(sent.code, 0, sent.err);
     const filled = await until(short, (s) => s.text.includes("/help"));
     assert(!filled.text.includes("Git/help"));
+    // Plugin arguments are literal text too: `tide <plugin-id> <command> ...` is a
+    // namespace, and bin/tide must keep MSYS from rewriting them the same way.
+    const pluginLiteral = await cli(['screen', 'contains', short, '/help'], true);
+    assert.equal(pluginLiteral.code, 0, pluginLiteral.err);
+    assert.equal(JSON.parse(pluginLiteral.out).found, true, pluginLiteral.out);
     assert.equal((await cli(["send-key", short, "Ctrl+U"], true)).code, 0);
     const literalHelp = await cli(["send", short, "--help"], true);
     assert.equal(literalHelp.code, 0, literalHelp.err);
@@ -92,22 +97,13 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     const unsupportedScroll = await cli(['scroll', short, 'up']);
     assert.equal(unsupportedScroll.code, 1);
     assert.match(unsupportedScroll.err, /SGR/);
-    // ConPTY may handle XTWINOPS itself; other outer terminals may ignore it.
-    const ignoredResize = await cli(['resize', short, '--cols', '110', '--rows', '32', '--with-capture']);
-    assert([0, 3].includes(ignoredResize.code!), ignoredResize.err);
-    const resized = JSON.parse(ignoredResize.out);
-    assert.equal(resized.applied, resized.actual.cols === 110 && resized.actual.rows === 32);
-    assert.equal(resized.actual.cols, resized.capture.cols);
-    assert.equal(resized.actual.rows, resized.capture.rows);
-    const restored = await cli(['resize', short, '--cols', String(dimensions.cols), '--rows', String(dimensions.rows)]);
-    assert.equal(restored.code, 0, restored.err);
     assert.equal(plain.out, (JSON.parse(json.out) as Snapshot).text + "\n");
     t.diagnostic('send, chord and plain capture passed');
     assert(!plain.out.includes("\x1b"));
     const idle = await cli(['wait-idle', short, '--idle-time', '0.1', '--timeout', '2']);
-    assert.equal(idle.code, 0); assert.equal(JSON.parse(idle.out).idle, true);
+    assert.equal(idle.code, 0, idle.err + idle.out); assert.equal(JSON.parse(idle.out).idle, true);
     const timed = await cli(['wait-idle', short, '--idle-time', '2', '--timeout', '0']);
-    assert.equal(timed.code, 3); assert.equal(JSON.parse(timed.out).idle, false);
+    assert.equal(timed.code, 3, timed.err + timed.out); assert.equal(JSON.parse(timed.out).idle, false);
     for (const timeout of ['2', '0']) {
       const captured = await cli(['wait-idle', short, '--with-capture', '--idle-time', '0.1', '--timeout', timeout]);
       assert.equal(captured.code, timeout === '0' ? 3 : 0, captured.err);
@@ -187,10 +183,24 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
       assert.equal(invalid.out, '');
     }
     assert(!(await requestSession<Snapshot>(short, { command: 'capture' }, registry)).text.includes('NEVER_INVALID_INPUT'));
-    const plugins = await cli(["plugins", short]);
+    const plugins = await cli(["plugin", "status", short]);
     assert.equal(JSON.parse(plugins.out)[0].id, "screen");
-    const result = await cli(["plugin", short, "screen", "contains", "FORMAL_SHELL_OK"]);
-    assert.equal(JSON.parse(result.out).found, true);
+    const direct = await cli(["screen", "contains", short, "FORMAL_SHELL_OK"]);
+    const single = JSON.parse(direct.out) as { id: string; found: boolean };
+    assert.equal(single.found, true, direct.err + direct.out);
+    // `--all` replaces the session ID: one entry per matching session, and each
+    // session answers for itself exactly as when addressed directly.
+    const all = await cli(["screen", "contains", "--all", "FORMAL_SHELL_OK"]);
+    assert.equal(all.code, 0, all.err + all.out);
+    const entries = JSON.parse(all.out) as Array<{ id: string; result?: { id: string; found: boolean }; error?: string }>;
+    assert.deepEqual(entries.map((e) => e.id).sort(), [a.id, b.id].sort());
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    assert.deepEqual([byId.get(a.id)?.error, byId.get(b.id)?.error], [undefined, undefined], all.out);
+    assert.equal(byId.get(a.id)!.result!.id, single.id);
+    assert.equal(byId.get(a.id)!.result!.found, single.found);
+    assert.equal(byId.get(b.id)!.result!.found, false, all.out);
+    // The plugin's own help marks which commands accept --all.
+    assert.match((await cli(["screen", "--help"])).out, /^  contains\* /m);
     t.diagnostic('plugin command passed');
     const bad = await cli(["send-key", short, "Enter", "Win+R"]);
     assert.notEqual(bad.code, 0);
@@ -203,7 +213,7 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     assert.equal((await rpc<SessionInfo>(record, { command: "info" })).id, a.id);
     await assert.rejects(rpc({ ...record, token: "wrong" }, { command: "send", text: "never" }), /Unauthorized/);
     // Observation failure must not hide an acknowledged input write.
-    await cli(['send', b.id, 'sleep 0.3; exit']);
+    await cli(['send', b.id, 'sleep 0.3; exit 7']);
     // ConPTY may report shell exit after the final screen has already gone quiet.
     const endedWhileWaiting = await cli(['send-key', b.id, 'Enter', '--wait-idle', '--idle-time', '10', '--timeout', '15', '--with-capture']);
     assert.equal(endedWhileWaiting.code, 1, endedWhileWaiting.out);
@@ -211,13 +221,30 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     // Host shutdown can race with either observation request.
     assert(['wait-idle', 'capture'].includes(JSON.parse(endedWhileWaiting.out).error.stage));
     assert.match(endedWhileWaiting.err, /Do not resend/);
+    // A size-changing resize is exercised last. Under ConPTY, MSYS bash was once seen
+    // (outside tide, not reproducible on demand) to drop the first byte of the write
+    // that follows one, so nothing here sends input after this point; the cost is that
+    // "input immediately after a size change" is not covered.
+    // ConPTY may handle XTWINOPS itself; other outer terminals may ignore it.
+    const ignoredResize = await cli(['resize', short, '--cols', '110', '--rows', '32', '--with-capture']);
+    assert([0, 3].includes(ignoredResize.code!), ignoredResize.err);
+    const resized = JSON.parse(ignoredResize.out);
+    assert.equal(resized.applied, resized.actual.cols === 110 && resized.actual.rows === 32);
+    assert.equal(resized.actual.cols, resized.capture.cols);
+    assert.equal(resized.actual.rows, resized.capture.rows);
     await requestSession(a.id.slice(0, 8), { command: "close" }, registry);
     t.diagnostic('close acknowledged');
+    const codes: number[] = [];
     for (const { exit } of children) {
       let timer: ReturnType<typeof setTimeout>;
-      try { await Promise.race([exit, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Host did not exit after close')), 10000); })]); }
+      // A healthy host needs ~6.5s: node-pty's console-list helper fails and leaves a
+      // 5s ref'd timer behind, and main.ts lets the loop drain rather than forcing an
+      // exit. This budget only needs to catch a real hang.
+      try { codes.push(await Promise.race([exit, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Error('Host did not exit after close')), 15000); })])); }
       finally { clearTimeout(timer!); }
     }
+    // `b`'s shell exited 7 on its own; `a` was closed while its shell was still alive.
+    assert.deepEqual(codes.sort((x, y) => x - y), [0, 7], 'host exit code must follow the hosted shell');
     assert.deepEqual(registry.records(), []);
   } finally {
     for (const { child, exited } of children) { try { if (!exited) child.kill(); } catch {} }

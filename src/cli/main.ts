@@ -6,8 +6,10 @@ import { liveSessions, requestSession } from "../session/ipc.js";
 import { stateDirectory } from "../session/registry.js";
 import { errorMessage, type SessionInfo, type ShellOptions, type Snapshot, type IdleResult, type Request } from "../session/types.js";
 import { validateWait } from "../terminal/idle.js";
+import { MAX_CAPTURE_LINES } from "../terminal/screen.js";
 import { validateSize } from "../terminal/resize.js";
 import { buildLaunchShellCommand, findProfile, loadProfiles, type ProfileEntry } from "../profile-config/index.js";
+import { loadPlugins, pluginList, setPluginEnabled, type TidePlugin } from "../plugins/runtime.js";
 
 import { commandHelp, help } from "./help.js";
 
@@ -46,11 +48,13 @@ function expectCount(args: string[], minimum: number, maximum = minimum) {
 
 function captureLines(raw: string | undefined) {
   const lines = Number(raw);
-  if (!Number.isInteger(lines) || lines < 1 || lines > 2000) throw Error("--lines must be 1..2000");
+  if (!Number.isInteger(lines) || lines < 1 || lines > MAX_CAPTURE_LINES) throw Error(`--lines must be 1..${MAX_CAPTURE_LINES}`);
   return lines;
 }
 
-function afterSendOptions(args: string[], allowEnter = false) {
+// `waitImplied` is for the wait-idle command, where the command name itself is
+// the wait, so --idle-time/--timeout are valid without --wait-idle.
+function afterSendOptions(args: string[], { allowEnter = false, waitImplied = false } = {}) {
   let wait = false, capture = false, enter = false, idleTime = 3, timeout = 30, timing = false;
   let lines: number | undefined;
   for (let i = 0; i < args.length; i++) {
@@ -66,10 +70,10 @@ function afterSendOptions(args: string[], allowEnter = false) {
       timing = true;
     } else throw Error(`Unknown operation option: ${name}; use tide help <command>`);
   }
-  if (timing && !wait) throw Error("--idle-time and --timeout require --wait-idle");
+  if (timing && !wait && !waitImplied) throw Error("--idle-time and --timeout require --wait-idle");
   if (lines !== undefined && !capture) throw Error("--lines requires --with-capture");
   validateWait(idleTime, timeout);
-  return { wait, capture, enter, idleTime, timeout, lines };
+  return { wait: wait || waitImplied, capture, enter, idleTime, timeout, lines };
 }
 
 async function sendAndObserve(id: string, request: Extract<Request, { command: "send" | "send-key" | "scroll" | "resize" }>, options: ReturnType<typeof afterSendOptions>, launched?: SessionInfo) {
@@ -100,15 +104,78 @@ async function sendAndObserve(id: string, request: Extract<Request, { command: "
   print(output);
 }
 
+// `tide <plugin id> <command> <session id> [args...]`. The plugin id is its own
+// namespace, so plugin commands can never shadow a core command or another
+// plugin's. The CLI only resolves the namespace against plugin metadata and
+// routes to the named session's host, where the command's code runs; the CLI
+// never executes plugin code itself.
+async function pluginCommand(id: string, args: string[]): Promise<void> {
+  const plugin = (await loadPlugins(stateDirectory())).find((candidate) => candidate.id === id);
+  if (!plugin) throw Error(`Unknown command: ${id}; use tide --help`);
+  const [name, ...rest] = args;
+  if (name === undefined || ["--help", "-h"].includes(name)) { console.log(pluginHelp(plugin)); return; }
+  if (!Object.hasOwn(plugin.commands ?? {}, name)) throw Error(`Unknown command: ${id} ${name}; use tide ${id} --help`);
+  const command = plugin.commands![name]!;
+  const [sessionId, ...commandArgs] = rest;
+  if (sessionId === "--all") {
+    if (!command.all) throw Error(`tide ${id} ${name} does not take --all; it needs one session ID`);
+    print(await everySession(plugin, name, commandArgs));
+    return;
+  }
+  if (!sessionId) throw Error(`tide ${id} ${name} requires a session ID${command.all ? " or --all" : ""}; use tide list`);
+  print(await requestSession(sessionId, { command: "plugin", plugin: id, action: name, args: commandArgs }));
+}
+
+// A command marked `all` is meaningful for every matching session, so `--all`
+// may stand in for the session id. The CLI asks each live session which plugins
+// it matches and runs the command in those hosts; the result is one
+// {id, result|error} per matching session, and one session's failure never
+// hides the others' results.
+async function everySession(plugin: TidePlugin, name: string, args: string[]) {
+  const results = await Promise.all((await liveSessions()).map(async ({ info }) => {
+    try {
+      const matches = await requestSession<Array<{ id: string; matched: boolean }>>(info.id, { command: "plugins" });
+      if (!matches.some((entry) => entry.id === plugin.id && entry.matched)) return null;
+      return { id: info.id, result: await requestSession(info.id, { command: "plugin", plugin: plugin.id, action: name, args }) };
+    } catch (error) { return { id: info.id, error: errorMessage(error) }; }
+  }));
+  return results.filter((entry) => entry !== null);
+}
+
+function pluginHelp(plugin: TidePlugin): string {
+  const commands = Object.entries(plugin.commands ?? {});
+  const note = commands.some(([, command]) => command.all)
+    ? "\n* Accepts --all instead of a session ID: the CLI then runs the command in\n  every session whose host reports a match, and returns a [{id, result|error}]\n  array with one entry per session."
+    : "";
+  return `tide ${plugin.id} <command> <session id> [args...]
+
+${plugin.name}
+
+COMMANDS
+${commands.length ? commands.map(([name, command]) => `  ${(name + (command.all ? "*" : "")).padEnd(10)} ${command.description}`).join("\n") : "  (none)"}
+
+Every command runs inside the named session's host, which re-checks that this
+plugin matches it before running. Arguments after the session id go to the
+plugin unchanged; read each description for what it expects.${note}
+`;
+}
+
 async function main() {
   const [command = "help", ...args] = process.argv.slice(2);
   if (["help", "--help", "-h"].includes(command)) { expectCount(args, 0, 1); console.log(help(args[0])); return; }
-  if (command !== "__host" && !Object.hasOwn(commandHelp, command)) throw Error(`Unknown command: ${command}; use tide --help`);
+  // Both shell paths below end by draining the event loop, never by process.exit.
+  // A forced exit right after the shell ends was observed to leave this process alive
+  // (the session is already unregistered by then; only the terminal and a stray node
+  // process give it away), and draining costs ~6.5s on Windows because node-pty's
+  // console-list helper fails and leaves a 5s ref'd timer behind. Neither is free;
+  // draining is the one that has not wedged. The delay is user-visible, so it is
+  // documented in tide help run and tide help close; keep the three in sync.
+  if (command === "__host") { if (args.length !== 1 && args.length !== 2) throw Error("Invalid terminal launch arguments"); process.exitCode = await runSession(consumeLaunch(args[0]!, args[1]), args[0]); return; }
+  // Anything that is not a core command can only be a plugin namespace.
+  if (!Object.hasOwn(commandHelp, command)) { await pluginCommand(command, args); return; }
   if (args.length === 1 && ["--help", "-h"].includes(args[0]!)) { console.log(help(command)); return; }
-  // Native terminal handles may remain referenced after shell exit on Windows.
-  // runSession has already stopped plugins, unregistered IPC and flushed the terminal.
-  if (command === "__host") { if (args.length !== 1 && args.length !== 2) throw Error("Invalid terminal launch arguments"); process.exit(await runSession(consumeLaunch(args[0]!, args[1]), args[0])); }
-  if (command === "run") { process.exit(await runSession(shellOptions(args))); }
+
+  if (command === "run") { process.exitCode = await runSession(shellOptions(args)); return; }
   if (command === "launch") {
     const shellArgs: string[] = [], observation: string[] = [];
     let text: string | undefined;
@@ -180,6 +247,26 @@ async function main() {
     });
     return;
   }
+  if (command === "plugin") {
+    const [action, ...rest] = args;
+    if (action === undefined) { console.log(help("plugin")); return; }
+    if (action === "list") { expectCount(rest, 0); print(await pluginList(stateDirectory())); return; }
+    if (action === "enable" || action === "disable") {
+      const [selector, ...extra] = rest;
+      if (!selector) throw Error(`plugin ${action} requires a bundled plugin name or a module path`);
+      expectCount(extra, 0);
+      const file = await setPluginEnabled(stateDirectory(), selector, action === "enable");
+      // The file is the whole state: a host already running keeps what it loaded.
+      console.error(`Saved ${file}; the change applies to new sessions.`);
+      print(await pluginList(stateDirectory())); return;
+    }
+    if (action !== "status") throw Error(`Unknown command: plugin ${action}; use tide --help`);
+    const [id, ...extra] = rest;
+    if (!id) throw Error("plugin status requires a session ID");
+    expectCount(extra, 0);
+    print(await requestSession(id, { command: "plugins" }));
+    return;
+  }
   if (command === "list") { expectCount(args, 0); print((await liveSessions()).map(({ info }) => info)); return; }
   const [id, ...rest] = args;
   if (!id) throw Error(`${command} requires a session ID`);
@@ -211,7 +298,7 @@ async function main() {
     }
     case "send": {
       expectCount(rest, 1, Infinity);
-      const options = afterSendOptions(rest.slice(1), true);
+      const options = afterSendOptions(rest.slice(1), { allowEnter: true });
       if (rest[0] === "--stdin" && process.stdin.isTTY) throw Error("--stdin requires piped input");
       const text = rest[0] === "--stdin" ? readFileSync(0, "utf8") : rest[0]!;
       await sendAndObserve(id, { command, text }, options); break;
@@ -236,25 +323,13 @@ async function main() {
       break;
     }
     case "wait-idle": {
-      let idleTime = 3, timeout = 30, capture = false;
-      let lines: number | undefined;
-      for (let i = 0; i < rest.length; i++) {
-        const name = rest[i];
-        if (name === "--with-capture") { capture = true; continue; }
-        if (name === "--lines") { lines = captureLines(rest[++i]); continue; }
-        if (name !== "--idle-time" && name !== "--timeout") throw Error(`Unknown wait-idle option: ${name}`);
-        const raw = rest[++i];
-        if (!raw?.trim()) throw Error(`${name} needs seconds`);
-        if (name === "--idle-time") idleTime = Number(raw); else timeout = Number(raw);
-      }
-      validateWait(idleTime, timeout);
-      if (lines !== undefined && !capture) throw Error("--lines requires --with-capture");
-      const result = await requestSession<IdleResult>(id, { command, idleTime, timeout });
+      const options = afterSendOptions(rest, { waitImplied: true });
+      const result = await requestSession<IdleResult>(id, { command, idleTime: options.idleTime, timeout: options.timeout });
       if (!result.idle) process.exitCode = 3;
       const output: IdleResult & { capture?: Snapshot; error?: { stage: string; message: string } } = { ...result };
-      if (capture) {
+      if (options.capture) {
         try {
-          output.capture = await requestSession<Snapshot>(result.id, { command: "capture", ...(lines === undefined ? {} : { lines }) });
+          output.capture = await requestSession<Snapshot>(result.id, { command: "capture", ...(options.lines === undefined ? {} : { lines: options.lines }) });
         } catch (error) {
           output.error = { stage: "capture", message: errorMessage(error) };
           console.error(`Capture after waiting failed: ${output.error.message}`);
@@ -264,8 +339,7 @@ async function main() {
       print(output);
       break;
     }
-    case "info": case "close": case "plugins": expectCount(rest, 0); print(await requestSession(id, { command })); break;
-    case "plugin": expectCount(rest, 2, Infinity); print(await requestSession(id, { command, plugin: rest[0]!, action: rest[1]!, args: rest.slice(2) })); break;
+    case "info": case "close": expectCount(rest, 0); print(await requestSession(id, { command })); break;
     default: throw Error(`Unknown command: ${command}; use tide --help`);
   }
 }

@@ -3,14 +3,13 @@ import assert from "node:assert/strict";
 import { inspectScreen } from "../../src/plugins/recovery/screen.ts";
 import { claudeAvailability } from "../../src/plugins/claude-code-resume/index.ts";
 import { codexAvailability, codexPongAvailability } from "../../src/plugins/codex-resume/index.ts";
-import { ResumeMonitor, resumePlugin, PROBE_INTERVAL_MS, RESUME_DELAY_MS, type Availability, type Probe } from "../../src/plugins/recovery/monitor.ts";
+import { ResumeMonitor, resumePlugin, PROBE_INTERVAL_MS, RESUME_DELAY_MS, type Availability, type Probe, type StatusReport } from "../../src/plugins/recovery/monitor.ts";
 import { Plugins, type PluginContext } from "../../src/plugins/runtime.ts";
 import type { Snapshot } from "../../src/session/types.ts";
 
 function screen(body = "● You've hit your limit · resets 8pm", input = "", kind = "claude"): Snapshot {
   const text = `${kind === "claude" ? "Claude Code" : "OpenAI Codex"}\n${body}\n\n${kind === "claude" ? "❯" : "›"} ${input}\n  ${kind === "claude" ? "bypass permissions on · shift+tab to cycle" : "90% context left · ? for shortcuts"}`;
-  return { id: "session", capturedAt: "now", cols: 100, rows: 30, buffer: "normal", title: "", text,
-    cursor: { row: text.split("\n").length - 2, col: 2 + input.length } };
+  return { id: "session", capturedAt: "now", cols: 100, rows: 30, buffer: "normal", title: "", text };
 }
 
 test("resume detection uses the latest response and current composer, not old quota text", () => {
@@ -23,8 +22,6 @@ test("resume detection uses the latest response and current composer, not old qu
       assert.equal(inspectScreen(kind, screen(body, "", kind)).interruption, null, body);
     }
     assert.equal(inspectScreen(kind, screen(undefined, "user is typing", kind)).interruption, null);
-    const home = screen(undefined, "draft text", kind); home.cursor!.col = 2;
-    assert.equal(inspectScreen(kind, home).interruption, null, "Home must not make a nonempty input look empty");
     const shell = screen(undefined, "", kind); shell.text += "\nuser@host $ ";
     assert.equal(inspectScreen(kind, shell).matched, false);
     const busy = screen(undefined, "", kind); busy.text += "\nesc to interrupt";
@@ -49,23 +46,28 @@ test("quota parsers require affirmative recovery evidence", () => {
   assert.equal(claudeAvailability({ ...success, result: "Something else" }, 0).allowed, null);
 });
 
-test("running Claude remains manageable without probing or resuming old errors", async () => {
+test("watch and unwatch flip the plugin between watching and disabled; the plugin probes only after a real interruption", async () => {
   let probes = 0;
   const probe: Probe = async () => { probes++; return { allowed: true, reason: "ok" }; };
   const f = fixture(probe);
   const busy = screen(); busy.text += " · esc to interrupt · 29 agents";
   f.setScreen(busy);
-  const plugins = new Plugins([resumePlugin("claude-code-resume", "claude", probe)], f.context);
+  const plugins = new Plugins([resumePlugin("ccr", "Claude Code recovery", "claude", probe)], f.context);
   await plugins.start();
   try {
-    assert.equal((await plugins.list())[0]!.matched, true);
-    for (const command of ["status", "check", "disable", "enable"]) {
-      await plugins.run("claude-code-resume", command, []);
-    }
-    await f.monitor.observe(true);
-    assert.equal(f.monitor.status().phase, "watching");
+    const observed = async () => (await plugins.run("ccr", "status", []) as StatusReport).monitor;
+    assert.equal((await observed()).enabled, false, "plugin starts disabled (no auto-watch)");
+    assert.equal((await observed()).phase, "disabled");
+    await plugins.run("ccr", "watch", []);
+    assert.equal((await observed()).enabled, true);
+    assert.equal((await observed()).phase, "watching");
+    // No quota on the busy screen ⇒ the enabled monitor still does not probe.
+    await f.monitor.tick(true);
     assert.equal(probes, 0);
     assert.deepEqual(f.writes, []);
+    await plugins.run("ccr", "unwatch", []);
+    assert.equal((await observed()).enabled, false);
+    assert.equal((await observed()).phase, "disabled");
   } finally { await plugins.dispose(); await f.monitor.dispose(); }
 });
 
@@ -80,7 +82,17 @@ function fixture(probe: Probe, delay = PROBE_INTERVAL_MS, quietMs = 0) {
     onOutput: () => () => {},
   };
   const monitor = new ResumeMonitor(context, "claude", probe, delay, () => now, quietMs);
-  return { monitor, context, writes, setScreen: (value: Snapshot) => { current = value; }, advance: (ms = PROBE_INTERVAL_MS) => { now += ms; } };
+  return { monitor, context, writes, setScreen: (value: Snapshot) => { current = value; }, advance: (ms = PROBE_INTERVAL_MS) => { now += ms; }, now: () => now };
+}
+
+type Fixture = ReturnType<typeof fixture>;
+// Tests read monitor state through the public status() report rather than
+// reaching into the monitor's fields.
+const phaseOf = async (f: Fixture) => (await f.monitor.status()).monitor.phase;
+const interruptionOf = async (f: Fixture) => (await f.monitor.status()).monitor.interruption;
+async function resumeAfter(f: Fixture): Promise<number | null> {
+  const { decision } = await f.monitor.status();
+  return decision.kind === "wait" ? f.now() + decision.remainingMs : null;
 }
 
 test("connection errors are classified separately; active retries and auth errors are excluded", () => {
@@ -101,11 +113,11 @@ test("both interruption types require three stable minutes, including manual che
     const f = fixture(async () => { calls++; return { allowed: true, reason: "ok" }; }, 0, RESUME_DELAY_MS);
     try {
       f.setScreen(screen(body));
-      await f.monitor.observe(true);
-      assert.equal(f.monitor.status().phase, "cooldown");
-      f.advance(RESUME_DELAY_MS - 1); await f.monitor.observe(true);
+      await f.monitor.tick(true);
+      assert.equal(await phaseOf(f), "cooldown");
+      f.advance(RESUME_DELAY_MS - 1); await f.monitor.tick(true);
       assert.equal(calls, 0); assert.equal(f.writes.length, 0);
-      f.advance(1); await f.monitor.observe();
+      f.advance(1); await f.monitor.tick(false);
       assert.equal(calls, 1); assert.equal(f.writes.at(-1), "Enter");
       assert(f.writes[0]!.includes(body.includes("Connection") ? "连接中断" : "限额中断"));
     } finally { await f.monitor.dispose(); }
@@ -116,15 +128,15 @@ test("render changes reset cooldown, identical redraws do not; retries cancel th
   let calls = 0;
   const f = fixture(async () => { calls++; return { allowed: true, reason: "ok" }; }, 0, RESUME_DELAY_MS);
   try {
-    await f.monitor.observe(); const first = f.monitor.status().resumeAfter;
-    f.advance(60000); await f.monitor.observe(); assert.equal(f.monitor.status().resumeAfter, first);
+    await f.monitor.tick(false); const first = await resumeAfter(f);
+    f.advance(60000); await f.monitor.tick(false); assert.equal(await resumeAfter(f), first);
     const resized = screen(); resized.cols = 80; f.setScreen(resized);
-    await f.monitor.observe(); assert.equal(f.monitor.status().resumeAfter, first! + 60000);
-    f.advance(120000); await f.monitor.observe(true); assert.equal(calls, 0);
+    await f.monitor.tick(false); assert.equal(await resumeAfter(f), first! + 60000);
+    f.advance(120000); await f.monitor.tick(true); assert.equal(calls, 0);
     f.setScreen(screen("● API Error: Connection error. Retrying in 4 seconds"));
-    await f.monitor.observe(); assert.equal(f.monitor.status().interruption, null);
-    f.setScreen(screen("● API Error: Connection error.")); await f.monitor.observe();
-    f.advance(RESUME_DELAY_MS); await f.monitor.observe(); assert.equal(calls, 1);
+    await f.monitor.tick(false); assert.equal(await interruptionOf(f), null);
+    f.setScreen(screen("● API Error: Connection error.")); await f.monitor.tick(false);
+    f.advance(RESUME_DELAY_MS); await f.monitor.tick(false); assert.equal(calls, 1);
   } finally { await f.monitor.dispose(); }
 });
 
@@ -132,12 +144,12 @@ test("screen changes during a probe must complete a new cooldown before resuming
   let finish!: (value: Availability) => void;
   const f = fixture(() => new Promise((resolve) => { finish = resolve; }), 0, RESUME_DELAY_MS);
   try {
-    await f.monitor.observe(); f.advance(RESUME_DELAY_MS);
-    const pending = f.monitor.observe(); await new Promise((resolve) => setImmediate(resolve));
+    await f.monitor.tick(false); f.advance(RESUME_DELAY_MS);
+    const pending = f.monitor.tick(false); await new Promise((resolve) => setImmediate(resolve));
     const changed = screen(); changed.cols = 90; f.setScreen(changed);
     finish({ allowed: true, reason: "ok" }); await pending;
     assert.deepEqual(f.writes, []);
-    await f.monitor.observe(true); assert.equal(f.monitor.status().phase, "cooldown");
+    await f.monitor.tick(true); assert.equal(await phaseOf(f), "cooldown");
   } finally { await f.monitor.dispose(); }
 });
 
@@ -145,12 +157,12 @@ test("Claude waits five minutes, rechecks blocked probes, then sends once via co
   let probes = 0;
   const f = fixture(async () => ({ allowed: ++probes > 1, reason: "fixture" }));
   try {
-    await f.monitor.observe(); assert.equal(probes, 0);
-    f.advance(); await f.monitor.observe(); assert.equal(probes, 1); assert.deepEqual(f.writes, []);
-    await f.monitor.observe(); assert.equal(probes, 1);
-    f.advance(); await f.monitor.observe(); assert.equal(probes, 2);
+    await f.monitor.tick(false); assert.equal(probes, 0);
+    f.advance(); await f.monitor.tick(false); assert.equal(probes, 1); assert.deepEqual(f.writes, []);
+    await f.monitor.tick(false); assert.equal(probes, 1);
+    f.advance(); await f.monitor.tick(false); assert.equal(probes, 2);
     assert.deepEqual(f.writes, ["继续完成刚才因限额中断的任务。", "Enter"]);
-    f.setScreen(screen()); await f.monitor.observe(true);
+    f.setScreen(screen()); await f.monitor.tick(true);
     assert.equal(probes, 2); assert.equal(f.writes.length, 2);
   } finally { await f.monitor.dispose(); }
 });
@@ -159,8 +171,8 @@ test("normal completion and stale quota screens never trigger a probe or continu
   const f = fixture(async () => { throw Error("must not probe"); });
   try {
     f.setScreen(screen("● You've hit your limit\n● Done"));
-    await f.monitor.observe(true); assert.deepEqual(f.writes, []);
-    assert.equal(f.monitor.status().interruption, null);
+    await f.monitor.tick(true); assert.deepEqual(f.writes, []);
+    assert.equal(await interruptionOf(f), null);
   } finally { await f.monitor.dispose(); }
 });
 
@@ -168,10 +180,10 @@ test("a newer response while a probe runs cancels recovery even if quota becomes
   let finish!: (value: Availability) => void;
   const f = fixture(() => new Promise((resolve) => { finish = resolve; }));
   try {
-    const pending = f.monitor.observe(true);
+    const pending = f.monitor.tick(true);
     await new Promise((resolve) => setImmediate(resolve));
     f.setScreen(screen("● You've hit your limit\n● Done"));
-    await f.monitor.observe(); finish({ allowed: true, reason: "recovered" }); await pending;
+    await f.monitor.tick(false); finish({ allowed: true, reason: "recovered" }); await pending;
     assert.deepEqual(f.writes, []);
   } finally { await f.monitor.dispose(); }
 });
@@ -182,22 +194,22 @@ test("changed input or failed submission is not retried automatically", async ()
     f.context.sendKey = async () => { throw Error("uncertain delivery"); };
     if (changed) f.context.send = async (text) => { f.writes.push(text); f.setScreen(screen(undefined, "human input")); };
     try {
-      await f.monitor.observe(true);
-      assert.equal(f.monitor.status().phase, "delivery-unknown");
-      f.setScreen(screen()); await f.monitor.observe(true);
+      await f.monitor.tick(true);
+      assert.equal(await phaseOf(f), "delivery-unknown");
+      f.setScreen(screen()); await f.monitor.tick(true);
       assert.equal(f.writes.length, 1);
     } finally { await f.monitor.dispose(); }
   }
 });
 
-test("disable cancels a pending probe; separate monitors do not share interruptions", async () => {
+test("setEnabled(false) cancels a pending probe; separate monitors do not share interruptions", async () => {
   let finish!: (value: Availability) => void;
   const a = fixture(() => new Promise((resolve) => { finish = resolve; }));
   const b = fixture(async () => ({ allowed: true, reason: "recovered" }));
   try {
-    const pending = a.monitor.observe(true); await new Promise((resolve) => setImmediate(resolve));
+    const pending = a.monitor.tick(true); await new Promise((resolve) => setImmediate(resolve));
     a.monitor.setEnabled(false); finish({ allowed: true, reason: "recovered" }); await pending;
-    await b.monitor.observe(true);
+    await b.monitor.tick(true);
     assert.deepEqual(a.writes, []); assert.equal(b.writes.length, 2);
   } finally { await a.monitor.dispose(); await b.monitor.dispose(); }
 });

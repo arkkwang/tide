@@ -37,7 +37,7 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
   let closeServer: (() => void) | undefined;
   let inputQueue = Promise.resolve();
   const enqueue = (operation: () => Promise<void>) => {
-    const result = inputQueue.then(async () => { if (stopping || info.exited) throw Error("Shell has exited"); await operation(); });
+    const result = inputQueue.then(async () => { if (stopping || info.exited) throw Error("Shell has ended"); await operation(); });
     inputQueue = result.catch(() => {});
     return result;
   };
@@ -51,8 +51,14 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
   });
   const plugins = new Plugins(configuredPlugins, { session: info, capture: (lines) => screen.capture(id, lines), send, sendKey });
   const killChild = () => {
-    if (killRequested || info.exited) return;
+    if (killRequested) return;
     killRequested = true;
+    // Always ask node-pty to tear the pty down, even when the shell exited on its own:
+    // that is what disposes its conout worker thread, and a live worker keeps this
+    // process from ever ending.
+    // FRAGILE: node-pty 1.1.0 disposes that worker from kill() and nowhere else, and
+    // this host has no forced-exit fallback, so a version that stops doing so leaves
+    // the host hanging silently. Only the integration test's exit budget reports it.
     child.kill();
   };
   const stop = () => {

@@ -94,6 +94,8 @@ ${shell}
 
 OUTPUT
   Live terminal output, not JSON. Exit code follows the hosted shell.
+  On Windows the terminal is released about 6 seconds after the shell ends:
+  node-pty's own cleanup keeps the host process alive that long. Not a hang.
 EXAMPLE
   tide run --shell bash --cwd .`,
   launch: `tide launch [--shell executable] [--cwd directory] [--with-command text | --profile label] [--wait-idle] [--with-capture] [--lines N] [--idle-time N] [--timeout N] [-- shell-args... | -- <bin-args...>]
@@ -282,7 +284,9 @@ ${session}
 
 OUTPUT
   JSON {id, closing: true} acknowledges shutdown, not completion of cleanup.
-  Use list to verify removal. Captures are not retained after the session ends.
+  Use list to verify removal: it drops the session at once, while on Windows the
+  terminal window itself is released about 6 seconds later (see tide help run).
+  Captures are not retained after the session ends.
 EXAMPLE
   tide close abc123`,
   profiles: `tide profiles
@@ -300,47 +304,76 @@ OUTPUT
   file is otherwise not touched.
 EXAMPLE
   tide profiles`,
-  plugins: `tide plugins <id>
+  plugin: `tide plugin list
+tide plugin status <id>
+tide plugin enable <name|path>
+tide plugin disable <name|path>
+tide <plugin-id> <command> <session id> [args...]
 
-Discover explicitly configured plugins and the commands matching this session now.
-${session}
+List the plugins Tide knows about, or report which of them are active in one
+session. Each plugin's own commands live in that plugin's namespace: run
+tide <plugin-id> --help for them. The CLI resolves the namespace and forwards to
+the named session's host, where the command's code runs; the plugin never sees
+the session id. A command that is meaningful for every session at once is
+marked * in that help: it accepts --all in place of the session id, and the CLI
+then runs it in each session whose host reports a match, returning one
+{id, result|error} per session.
+
+enable/disable edit plugins.json, the only configuration the core writes, and
+print the resulting registry. They apply to sessions started afterwards, because
+a running host loaded its plugins at launch. <name> is a bundled name and <path>
+a module path: the same string the file stores. Enabling loads and validates the
+module before writing it, so one that cannot load is never saved; disabling needs
+an entry that is there and loads nothing.
 
 OUTPUT
-  JSON array of {id, matched, commands: [{name, description}], error}.
-  [] means no plugins configured. Commands appear only for matched plugins.
-  Read each command's description for arguments/behavior before calling plugin.
-  Detection is checked again at invocation; the foreground program can change.
+  list:   JSON array of {id, name, source, enabled}, in configuration order
+          followed by bundled plugins that are switched off. id is the namespace
+          addressing the plugin's commands; source is "bundled" or the module
+          path written in the configuration file; enabled means that file lists
+          it. Never contacts a session. An id that is also a core command name
+          (or help) is an error wherever this file is read — list, enable and
+          session start alike — because the CLI dispatches those names first and
+          such a plugin could never be addressed. enable/disable print the same
+          array.
+  status: JSON array of {id, name, matched, commands: [{name, description}],
+          error} for one session. [] means no plugins configured. Commands appear
+          only for plugins matching it now; read each description before calling
+          the command. Detection is checked again at invocation, because the
+          foreground program can change.
 
 CONFIGURATION
   TIDE_STATE_DIR/plugins.json (default installation .tide/plugins.json) contains
-  {"plugins":["codex-resume","claude-code-resume"]} enables bundled automatic
-  interruption recovery. Or list explicit local module paths; relative paths resolve from that
-  file. Modules load at shell launch; configure before starting a new session.
-  Plugins run as local code with the user's privileges. Recovery plugins act only
-  on the latest quota/connection-interrupted response with an empty input, after
-  180 seconds of stable screen (TIDE_RESUME_DELAY_SECONDS configures 1..3600).
-  Active retries cancel this countdown; check cannot bypass it. Codex quota errors
-  use App Server permission; connection errors probe with codex exec --ephemeral.
-  Claude probes with claude -p JSON. Failed probes retry every 5 minutes.
-  Model probes consume tokens. Discover status/check/disable/enable via
-  this command. check can cause recovery; status is read-only.
-EXAMPLE
-  tide plugins abc123`,
-  plugin: `tide plugin <id> <plugin> <command> [args...]
-
-Invoke a matching plugin's extension command. Discover names, descriptions and
-argument requirements with tide plugins <id>; there are no universal plugin args.
-${session}
-
-OUTPUT
-  JSON result defined by the plugin (null if it returns no value).
-  Errors, unconfigured plugins and detection mismatch exit 1.
-  Commands may write input or otherwise act on the session: read their description.
-  Trailing arguments, including --help, are passed unchanged to the plugin.
-EXAMPLE (requires the repository's screen example plugin)
-  tide plugins abc123
-  tide plugin abc123 screen contains 'Ready'`,
+  {"plugins":["cxr","ccr"]} to enable the bundled interruption-recovery plugins,
+  or explicit local module paths resolved from that file. Modules load at shell
+  launch; configure before starting a new session (tide plugin enable/disable
+  write this file). Plugins run as local code with
+  the user's privileges. The bundled recovery plugins act only on the latest
+  quota/connection-interrupted response with an empty input, after 180 seconds of
+  stable screen (TIDE_RESUME_DELAY_SECONDS configures 1..3600); active retries
+  cancel that countdown. Codex quota errors use App Server permission and
+  connection errors probe with codex exec --ephemeral; Claude probes with
+  claude -p JSON. Failed probes retry every 5 minutes, and model probes consume
+  tokens. Their own commands are status (read-only), watch and unwatch; the
+  monitor is off by default and watch <id> must be called after the foreground
+  CLI is ready. status accepts --all to report every session the plugin matches
+  at once; watch and unwatch act on one session.
+EXAMPLES
+  tide plugin list
+  tide plugin enable ccr
+  tide plugin disable ccr
+  tide plugin status abc123
+  tide ccr --help
+  tide ccr watch abc123
+  tide ccr status abc123`,
 };
+
+// Names the CLI handles before it can fall through to a plugin namespace:
+// `help` is dispatched by name, and every key of commandHelp is a core command.
+// A plugin carrying one of these ids loads and runs, but nothing can address it.
+export function isReservedName(name: string): boolean {
+  return name === "help" || Object.hasOwn(commandHelp, name);
+}
 
 const overview = `tide — visible interactive shells shared by humans and agents
 
@@ -361,8 +394,9 @@ COMMANDS
   wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-capture]
                                                          Wait for a quiet screen
   close <id>                      Terminate the hosted shell/session
-  plugins <id>                    Discover matching extensions and their commands
-  plugin <id> <plugin> <command> [args...]   Invoke an extension
+  plugin list | status <id>       List plugins, or one session's active plugins
+  plugin enable|disable <name|path>   Edit plugins.json; new sessions only
+  <plugin-id> <command> <id> [args...]  Run a plugin's own command, e.g. tide ccr status <id>
   profiles                       List launch profiles from .tide/launch-profiles.json
 
 AGENT WORKFLOW
@@ -416,8 +450,8 @@ ENVIRONMENT
   Git Bash: use the supplied bin/tide entry to preserve slash text such as /help;
   quoting alone does not prevent MSYS path conversion with direct node invocation.
   Core controls Tide-hosted shells only; no CLI history scanning, semantic status
-  detection or automatic recovery in the core. Explicitly enable codex-resume or
-  claude-code-resume for quota/connection recovery; see tide help plugins.
+  detection or automatic recovery in the core. Explicitly enable cxr (Codex) or
+  ccr (Claude Code) for quota/connection recovery; see tide help plugin.
 `;
 
 export function help(command?: string): string {

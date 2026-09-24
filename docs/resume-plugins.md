@@ -7,21 +7,22 @@
 在 `TIDE_STATE_DIR/plugins.json`（默认安装目录旁 `.tide/plugins.json`）配置：
 
 ```json
-{"plugins":["codex-resume","claude-code-resume"]}
+{"plugins":["cxr","ccr"]}
 ```
 
-配置后用 `tide run` 或 `tide launch` 启动新会话，然后在该 shell 中启动对应 CLI。原有本地模块路径仍然可用。每个会话各自管理插件状态，退出 Tide 会话会停止定时器并取消探测子进程。
+也可以用 `tide plugin enable cxr` / `tide plugin enable ccr` 写入同一个文件（`tide plugin disable <名称>` 相反）。配置后用 `tide run` 或 `tide launch` 启动新会话，然后在该 shell 中启动对应 CLI。原有本地模块路径仍然可用。每个会话各自管理插件状态，退出 Tide 会话会停止定时器并取消探测子进程。
 
 ```bash
-tide plugins <id>
-tide plugin <id> codex-resume status
-tide plugin <id> claude-code-resume status
-tide plugin <id> claude-code-resume check
-tide plugin <id> claude-code-resume disable
-tide plugin <id> claude-code-resume enable
+tide plugin list
+tide plugin status <id>
+tide ccr --help
+tide ccr status --all      # 所有匹配会话的状态
+tide ccr status <id>
+tide ccr watch <id>
+tide ccr unwatch <id>
 ```
 
-四个命令都不接额外参数。`status` 无网络副作用，返回 `enabled`、`phase`、`interruption: {kind, message}`（`kind` 为 `quota` 或 `connection`）、`stableSince`、`resumeAfter`、`nextProbeAt`、上次探测结果/错误/恢复时间，时间为 Unix 毫秒。`check` 异步触发检查，但不能绕过最短稳定等待；返回后再查询 `status`。它可能产生模型费用并发送继续文本。`disable` 停止本会话的自动恢复并取消正在运行的探测；`enable` 重新开始观察和计时。命令只在匹配的 CLI 画面中可用。
+两个插件默认**不监听**会话：在 `plugins.json` 中列出只表示启用插件进程，不会自动启动配额/连接中断的探测与恢复。准备好目标 CLI 后显式调用 `tide <插件 ID> watch <id>` 才会开始观察和计时；`unwatch` 停止本会话的自动恢复并取消正在运行的探测，进程仍驻留。`status` 始终可读，返回 `monitor.enabled` 区分是否正在监听。`watch` / `unwatch` 针对一个会话：第一个参数是会话 ID，CLI 据此路由到该会话的宿主执行，缺少会话 ID 时报错。`status` 跑一次 observe + decide + 读内存，无网络副作用，不创建或重置任何 episode、不取消在飞探测，返回 `observation`（当前屏识别）、`decision`（下一次 tick 会干啥）、`monitor`（持久状态含 `enabled`、`phase`、当前追踪的 `interruption`、各时间戳、上次探测结果/错误/恢复时间，时间均为 Unix 毫秒）。它是只读的，因此支持 `tide ccr status --all`：CLI 向每个匹配该插件的会话各问一次，返回 `[{id, result}]`，每个会话的状态仍由该会话的宿主给出，不存在跨会话汇总状态。命令只在匹配的 CLI 画面中可用。
 
 ## 判定与恢复
 
@@ -56,12 +57,13 @@ Claude 使用 `claude -p "Respond with the single word: pong" --no-session-persi
 - `TIDE_CODEX_BIN` / `TIDE_CLAUDE_BIN`：可选的可执行文件路径，默认从 PATH 找 codex / claude。
 - `TIDE_CODEX_MODEL`：可选 Codex 网络探测模型，应与待恢复窗口一致，默认使用 Codex 配置。
 - `TIDE_CLAUDE_MODEL`：可选探测模型，应与待恢复窗口匹配；未指定时使用 Claude 默认配置。不同模型可能拥有不同额度，不能把另一模型的 pong 当作所有模型均可用的保证。
-- `TIDE_RESUME_DELAY_SECONDS`：两类中断的最短连续稳定时间，默认 180 秒，允许 1..3600 秒。启动 Tide 前设置；调低可能增加与 CLI 自身重试发生竞争的概率。手动 `check` 同样受该值约束。
+- `TIDE_RESUME_DELAY_SECONDS`：两类中断的最短连续稳定时间，默认 180 秒，允许 1..3600 秒。启动 Tide 前设置；调低可能增加与 CLI 自身重试发生竞争的概率。任何一次恢复尝试都受该值约束。
+- `TIDE_INITIAL_DELAY_SECONDS`：发现中断后第一次探测的最短等待，默认 300 秒，允许 1..3600 秒；仅在 Claude 上生效（Codex 限额探测依赖缓冲结束）。
 
 参考：[Codex App Server](https://developers.openai.com/codex/app-server)、[Claude CLI 参数](https://code.claude.com/docs/en/cli-reference)。
 
 ## 验证范围
 
-自动测试覆盖新旧错误共存、正常完成、已有输入、两类中断的三分钟缓冲边界、手动检查不绕过缓冲、CLI 自身重试、探测期间变化、五分钟调度、失败不重发、停用及会话隔离。真实 PTY/Tide 集成测试将可配置缓冲缩短到 1 秒，用模拟 CLI 实现 App Server 握手和 Claude JSON 响应，验证两种中断到输入和 Enter 的完整链路，不消耗模型额度。
+自动测试覆盖新旧错误共存、正常完成、已有输入、两类中断的三分钟缓冲边界、强制 tick 不绕过缓冲、CLI 自身重试、探测期间变化、五分钟调度、失败不重发、停用及会话隔离。真实 PTY/Tide 集成测试将可配置缓冲缩短到 1 秒，用模拟 CLI 实现 App Server 握手和 Claude JSON 响应，验证两种中断到输入和 Enter 的完整链路，不消耗模型额度。
 
 Windows 本机另验证了真实 Codex App Server 返回明确可用、真实 Codex exec 临时探测返回 pong，以及在用户 Git Bash 环境下真实 Claude 返回 pong。没有人为耗尽真实账号额度，实际限额到数小时后重置的长周期过程尚未实测；macOS 本轮未实机验证。

@@ -1,11 +1,11 @@
 import { runJson } from "../recovery/process.js";
-import { resumePlugin, type Availability } from "../recovery/monitor.js";
+import { resumePlugin, isPongReply, type Availability } from "../recovery/monitor.js";
 
 export function claudeAvailability(value: unknown, code: number | null): Availability {
   if (!value || typeof value !== "object") throw Error("Invalid Claude probe response");
   const result = value as { type?: string; subtype?: string; is_error?: boolean; result?: unknown; api_error_status?: number };
   if (code === 0 && result.type === "result" && result.subtype === "success" && result.is_error === false
-    && typeof result.result === "string" && /^\s*pong[.!]?\s*$/i.test(result.result)) return { allowed: true, reason: "Claude returned pong successfully" };
+    && typeof result.result === "string" && isPongReply(result.result)) return { allowed: true, reason: "Claude returned pong successfully" };
   if (result.api_error_status === 429 || (typeof result.result === "string" && /rate[ _-]?limit|hit your limit|usage limit/i.test(result.result))) {
     return { allowed: false, reason: "Claude probe is rate/usage limited" };
   }
@@ -22,4 +22,4 @@ export async function probeClaude(cwd: string, signal: AbortSignal): Promise<Ava
   return claudeAvailability(result.value, result.code);
 }
 
-export const createClaudeResume = () => resumePlugin("claude-code-resume", "claude", probeClaude);
+export const createClaudeResume = () => resumePlugin("ccr", "Claude Code interruption recovery", "claude", probeClaude);

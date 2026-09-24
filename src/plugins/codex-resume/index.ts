@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, unlinkSync, rmdirSync, existsSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnCli, runProcess } from "../recovery/process.js";
-import { resumePlugin, type Availability } from "../recovery/monitor.js";
+import { resumePlugin, isPongReply, type Availability } from "../recovery/monitor.js";
 
 export function codexAvailability(value: unknown): Availability {
   if (!value || typeof value !== "object") throw Error("Invalid Codex quota response");
@@ -57,7 +57,7 @@ export async function probeCodex(cwd: string, signal: AbortSignal): Promise<Avai
 }
 
 export function codexPongAvailability(code: number | null, message: string): Availability {
-  return code === 0 && /^\s*pong[.!]?\s*$/i.test(message)
+  return code === 0 && isPongReply(message)
     ? { allowed: true, reason: "Codex exec returned pong successfully" }
     : { allowed: null, reason: "Codex exec did not confirm a successful pong" };
 }
@@ -80,7 +80,7 @@ export async function probeCodexConnection(cwd: string, signal: AbortSignal): Pr
   }
 }
 
-export const createCodexResume = () => resumePlugin("codex-resume", "codex", async (cwd, signal, interruption) => {
+export const createCodexResume = () => resumePlugin("cxr", "Codex interruption recovery", "codex", async (cwd, signal, interruption) => {
   if (interruption.kind === "connection") return probeCodexConnection(cwd, signal);
   return probeCodex(cwd, signal);
 });

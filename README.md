@@ -61,7 +61,7 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 
 ## 命令
 
-命令自带完整帮助，Agent 无需先读 README：`tide --help` 查看能力和操作流程，`tide help send` 或 `tide send --help` 查看参数、输出、示例和失败处理。`--help` 必须紧跟命令单独使用；`tide send <id> '--help'` 仍会发送原文。插件通过 `tide plugins <id>` 发现；命令描述应说明参数、行为和返回值。
+命令自带完整帮助，Agent 无需先读 README：`tide --help` 查看能力和操作流程，`tide help send` 或 `tide send --help` 查看参数、输出、示例和失败处理。`--help` 必须紧跟命令单独使用；`tide send <id> '--help'` 仍会发送原文。插件通过 `tide plugin list` 发现，某个插件自己的命令用 `tide <插件 ID> --help` 查看；命令描述应说明参数、行为和返回值。
 
 | 命令 | 行为 |
 | --- | --- |
@@ -78,8 +78,10 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | `capture <id> [--lines N] [--plain-text]` | 获取解析后的终端画面 |
 | `wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-capture]` | 等待画面连续不变，或到达超时，可同时返回画面 |
 | `close <id>` | 结束该托管 shell 和会话；不是 CLI 回合打断 |
-| `plugins <id>` | 查看插件匹配结果、扩展命令和插件错误 |
-| `plugin <id> <plugin> <command> [args...]` | 调用匹配的插件命令 |
+| `plugin list` | 列出 Tide 知道的插件及启用状态，不访问会话 |
+| `plugin enable <名称\|路径>` / `plugin disable <名称\|路径>` | 改写 `.tide/plugins.json` 的插件列表，只对之后启动的会话生效 |
+| `plugin status <id>` | 查看该会话的插件匹配结果、命令和插件错误 |
+| `<plugin-id> <command> <id> [args...]` | 调用插件自己的命令，例如 `ccr status <id>`；`all` 命令可用 `--all` 顶替 id，返回每个匹配会话一条结果 |
 
 默认输出 JSON。`capture --plain-text` 只打印快照里的文本，保留空格、换行和屏幕空行，无 JSON、颜色转义或额外标题；输出区域比原窗口窄时，外层终端仍可能自动折行。
 
@@ -130,7 +132,7 @@ Windows 宿主在 raw 模式之后启用 VT 输入，让 TUI 的鼠标滚轮、�
 
 默认 capture 是当前活动屏幕，`--lines` 可多取滚动缓冲，最大 2000 行。全屏 TUI 的 alternate screen 一般没有普通 shell 的历史滚动区；这不是结构化对话日志。
 
-CLI 退出后仍回到同一个 shell 和 Tide ID；shell 退出或 `close` 后注销会话并返回原终端，不在后台恢复。进程树和窗口强制关闭行为仍受系统及 shell 子进程行为影响。
+CLI 退出后仍回到同一个 shell 和 Tide ID；shell 退出或 `close` 后注销会话并返回原终端，不在后台恢复。注销是立即的（`tide list` 随即不再列出），但 Windows 上宿主进程还要约 6 秒才退出、原终端窗口才恢复：这是 node-pty 的清理时间，不是卡住；宿主不用强制退出换取速度，以免丢掉退出码或依赖 node-pty 内部实现。进程树和窗口强制关闭行为仍受系统及 shell 子进程行为影响。
 
 ## 滚动与窗口尺寸
 
@@ -145,6 +147,8 @@ tide resize 5fefa --cols 120 --rows 35 --wait-idle --with-capture
 `scroll` 的步数默认 3（1..100），不等于文本行数；位置是从 1 开始的屏幕列、行，默认屏幕中央。仅支持前台应用启用的 SGR 单元格鼠标协议，不支持时明确报错，不自动换成方向键。滚动改变用户和 Agent 共享的应用视图；普通 shell 历史偶尔可用 `capture --lines` 补看，频繁查阅应改用文件输出和 Read / grep / rg。
 
 `resize` 要求列数 20..500、行数 5..200，最多等 3 秒确认外层实际尺寸；PTY 和屏幕副本跟随外层，不强制制造内部尺寸差异。返回 `requested`、`actual`、`applied`，未达到目标时退出码为 3，仍可等待和抓屏。终端不支持、最大化、分屏或屏幕边界可能影响结果；请求超时不代表终端不会稍后处理。用户后续手动拉窗口会继续正常同步。已验证本机 Windows Terminal，其他终端不保证支持。
+
+未经确认的观察：ConPTY 下曾见到 MSYS bash 在尺寸变化后丢掉紧随其后写入的第一个字节，但这是在 tide 之外看到的、无法按需复现，手工 resize 后继续输入也未重现，触发条件不明；遇到时重新输入即可。
 
 ## 启动 profile
 
@@ -233,22 +237,25 @@ label 规则: 匹配 `[a-zA-Z0-9_-]+`，大小写不敏感，必须唯一。`com
 
 ## Plugin
 
-通过 `.tide/plugins.json` 显式加载插件，提供 `detect`、扩展命令、可选 `start` 和输出变化订阅。恢复插件复用同一套 `send`、`sendKey`，不使用独立投递路径。
+通过 `.tide/plugins.json` 显式加载插件。每个插件声明 `id`（寻址命名空间，全局唯一）、`name`（展示名）和 `commands`（它自己的命令），另提供 `detect`、可选 `start` 和输出变化订阅。插件命令按 `tide <插件 ID> <命令> <会话 ID> [参数...]` 调用，不占用核心命令名；CLI 只解析命名空间并路由到该会话的宿主，插件代码在宿主里运行。声明 `all: true` 的命令可用 `--all` 顶替会话 ID，CLI 对每个匹配会话各跑一次并返回 `[{id, result}]`；汇总发生在 CLI，状态仍只存在于各会话的宿主里。插件 ID 不能与核心命令同名：CLI 先派发核心命令，同名插件永远调不到，所以读取配置时（启动会话、`tide plugin list`、`tide plugin enable`）直接报错，不会加载。恢复插件复用同一套 `send`、`sendKey`，不使用独立投递路径。
 
-[插件契约和示例](docs/plugins.md)。内置可选的 `codex-resume`、`claude-code-resume`，通过 `.tide/plugins.json` 启用，重开会话生效：
+[插件契约和示例](docs/plugins.md)。内置可选的 `cxr`(Codex)、`ccr`(Claude Code)，用 `tide plugin enable ccr` 启用（直接改 `.tide/plugins.json` 等价），重开会话生效：
 
 ```json
-{"plugins":["codex-resume","claude-code-resume"]}
+{"plugins":["cxr","ccr"]}
 ```
 
 ```bash
-tide plugins 5fefa
-tide plugin 5fefa claude-code-resume status
-tide plugin 5fefa claude-code-resume check
-tide plugin 5fefa claude-code-resume disable
+tide plugin list          # 全部插件及启用状态
+tide plugin status 5fefa  # 该会话里哪些插件生效
+tide ccr --help           # ccr 自己的命令
+tide ccr status --all     # 所有匹配会话的状态
+tide ccr status 5fefa
+tide ccr watch 5fefa      # 开始监听该会话
+tide ccr unwatch 5fefa
 ```
 
-恢复插件支持限额和 API 连接中断；只处理最新响应明确中断且输入框为空的窗口。最终错误画面默认需连续稳定 3 分钟，CLI 仍在重试、出现新回复或用户输入时不会接管，`check` 也不能绕过缓冲。Codex 额度通过 App Server 查询，网络中断用 `codex exec --ephemeral` 独立探测；Claude 用 `claude -p` JSON ping/pong 探测。确认成功后才向原窗口发送继续，未恢复时每 5 分钟重查。`status` 只读。配置、限制和验证范围见 [中断恢复插件](docs/resume-plugins.md)。
+恢复插件支持限额和 API 连接中断；只处理最新响应明确中断且输入框为空的窗口。最终错误画面默认需连续稳定 3 分钟，CLI 仍在重试、出现新回复或用户输入时不会接管。Codex 额度通过 App Server 查询，网络中断用 `codex exec --ephemeral` 独立探测；Claude 用 `claude -p` JSON ping/pong 探测。确认成功后才向原窗口发送继续，未恢复时每 5 分钟重查。插件默认不监听会话，配置只表示加载插件进程，`watch` 才开始观察和计时。`status` 只读，不触发探测或发送。配置、限制和验证范围见 [中断恢复插件](docs/resume-plugins.md)。
 
 ## 验证与迁移
 
@@ -284,4 +291,4 @@ npm test
 
 旧的 `watch/unwatch/resume/quota/status/snapshot/tail/wait`、CLI 历史扫描和自动恢复实现已移除。`tide send` 现在表示终端文本输入，旧的 `--cli/--message/--mode` 用法不再适用。旧配置/历史状态不会导入新会话，新核心不读取它们；升级前已运行的旧版本进程需结束，新版本不会接管它们。
 
-本地运行数据位于 `TIDE_STATE_DIR`（默认安装目录旁 `.tide`）：`sessions/` 保存当前宿主的私有登记，`terminal-launches/` 保存一次性启动交接；不写 CLI 的历史或配置。异常终止留下的失效登记会在确认端点不存在后清理，无法确认的端点会报错，避免错误消除短 ID 歧义。
+本地运行数据位于 `TIDE_STATE_DIR`（默认安装目录旁 `.tide`）：`sessions/` 保存当前宿主的私有登记，`terminal-launches/` 保存一次性启动交接；除 `tide plugin enable/disable` 改写 `.tide/plugins.json` 外，不写 CLI 的历史或配置。异常终止留下的失效登记会在确认端点不存在后清理，无法确认的端点会报错，避免错误消除短 ID 歧义。
