@@ -39,8 +39,7 @@ export type Request =
   | { command: "info" | "close" | "plugins" }
   | { command: "capture"; lines?: number }
   | { command: "wait-idle"; idleTime: number; timeout: number }
-  | { command: "send"; text: string }
-  | { command: "send-key"; keys: string[] }
+  | ({ command: "send" } & ({ text: string; keys?: never } | { keys: string[]; text?: never }))
   | { command: "scroll"; direction: "up" | "down"; steps: number; x?: number; y?: number }
   | { command: "resize"; cols: number; rows: number }
   | { command: "plugin"; plugin: string; action: string; args: string[] };

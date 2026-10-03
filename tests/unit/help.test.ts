@@ -53,3 +53,38 @@ test("launch validates combined options before opening a terminal", () => {
     assert.match(result.stderr, message);
   }
 });
+
+test("send help explains literal input, ordered keys and exclusive modes without an old entry", () => {
+  const overview = cli().stdout;
+  const detail = cli("help", "send").stdout;
+  assert.match(overview, /send <id> --key/);
+  assert.doesNotMatch(overview + detail, /send-key/);
+  assert.equal(Object.hasOwn(commandHelp, "send-key"), false);
+  assert.match(detail, /Enter types the word; --key Enter/);
+  assert.match(detail, /in order, not simultaneously/);
+  assert.match(detail, /cannot combine with text, --stdin or --with-enter/);
+  assert.match(detail, /tide send abc123 q --wait-idle --with-capture/);
+  assert.equal(cli("help", "send-key").status, 1);
+  assert.match(cli("send-key", "unused", "Enter").stderr, /Unknown command/);
+});
+
+test("send rejects mixed modes and malformed sequences before contacting a session", () => {
+  for (const [args, message] of [
+    [["text", "--key", "Enter"], /Text cannot combine.*--with-enter/],
+    [["text", "--with-enter", "--key", "Enter"], /Text cannot combine/],
+    [["--stdin", "--key", "Enter"], /Text cannot combine/],
+    [["--key", "Enter", "--stdin"], /Choose one input mode/],
+    [["--key", "Up", "--key", "Enter"], /Choose one input mode/],
+    [["--key", "Enter", "--with-enter"], /append Enter/],
+    [["--key"], /1\.\.64 keys/],
+    [["--key", "--with-capture"], /1\.\.64 keys/],
+    [["--key", ...Array(65).fill("Enter")], /1\.\.64 keys/],
+    [["--key", "Enter", "--with-captur"], /Unknown operation option/],
+  ] as Array<[string[], RegExp]>) {
+    const result = cli("send", "unused", ...args);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, message);
+    assert.match(result.stderr, /Usage help: tide help send/);
+  }
+});

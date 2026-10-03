@@ -11,13 +11,15 @@ npm run build
 # Git Bash：在项目根目录定义当前窗口的快捷函数
 tide() { bash /d/workspace/program/personal/tide/bin/tide "$@"; }
 
-# 新开可见窗口，执行 echo hello，等待并返回会话 ID 和画面
+# 新开可见标签页，执行 echo hello，等待并返回会话 ID 和画面
 tide launch --with-command "echo hello" --wait-idle --with-capture
 ```
 
 需要全局 `tide` 命令时，在项目目录执行 `npm run link:local`，会先构建再刷新 npm 全局入口。普通代码修改执行 `npm run build` 即可；`package.json` 的 `bin` 改动后必须重新 link，build 不会重建 npm 已生成的启动脚本。尤其从旧的 `dist/tide.mjs` 入口升级时，需要这一步才能启用 Git Bash 文本保护。`npm pack` 前自动构建，包内只包含运行入口、构建产物、示例及文档，不包含本地会话数据。
 
-Windows 的 `launch` 通过 `wt.exe` 新开 Windows Terminal 窗口：从 Windows Terminal 内调用时沿用 `WT_PROFILE_ID` 对应的配置，否则使用用户默认配置，包括配色和字体。Shell 仍按 `--shell` / 环境变量选择，并加载正常的启动文件。未安装 Windows Terminal 时可在已有终端使用 `tide run`。新启动方式只影响新窗口，不更改已有会话。
+Windows 的 `launch` 通过 `wt.exe` 在当前 Windows Terminal 窗口新开一个标签页（`wt -w 0`，取当前虚拟桌面上最近使用的窗口）：从 Windows Terminal 内调用时沿用 `WT_PROFILE_ID` 对应的配置，否则使用用户默认配置，包括配色和字体。Windows Terminal 未运行、或当前虚拟桌面上没有窗口时仍新建窗口。Shell 仍按 `--shell` / 环境变量选择，并加载正常的启动文件。未安装 Windows Terminal 时可在已有终端使用 `tide run`。新启动方式只影响新标签页，不更改已有会话。
+
+会话内的 bash 提示符前面带 `T<短 ID>` 标记（例如 `T3c3375b9`），用于区分 Tide 托管的 shell 和自己开的终端；标记无颜色，直接接在原本 prompt 的同一行前面，不改动原 prompt 内容。标记通过 `PROMPT_COMMAND` 注入，所以不会被重写 PS1 的启动文件（如 Git Bash 的 `git-prompt.sh`）覆盖，也不需要改你的 `.bashrc`。其他 shell 没有对应的环境变量入口，保持自己的提示符。
 
 从返回的 `capture` 确认 shell 提示符就绪后，使用同一次返回的 `id` 继续操作：
 
@@ -40,10 +42,10 @@ tide close 5fefa
 | 新开会话并启动已知命令 | `tide launch --with-command "echo hello" --wait-idle --with-capture`，自动发送 Enter |
 | 提交内容并查看响应 | `tide send <id> '内容' --with-enter --wait-idle --with-capture` |
 | 只填入内容，留给用户检查 | `tide send <id> '内容' --with-capture` |
-| 确认菜单或权限提示 | `tide send-key <id> Enter --wait-idle --with-capture`，按当前提示选择正确按键 |
+| 确认菜单或权限提示 | `tide send <id> --key Enter --wait-idle --with-capture`，按当前提示选择正确按键 |
 | 长任务仍在运行，继续观察 | `tide wait-idle <id> --timeout 60 --with-capture`，不重发原任务；若预期执行较长，可调大 `--timeout`（如 300 秒，上限 3600 秒），减少反复等待调用 |
 | 偶尔补看屏幕附近的输出 | `tide wait-idle <id> --with-capture --lines 100` |
-| 打断前台任务并查看结果 | `tide send-key <id> Ctrl+C --wait-idle --with-capture` |
+| 打断前台任务并查看结果 | `tide send <id> --key Ctrl+C --wait-idle --with-capture` |
 | 只查看当前画面 | `tide capture <id>`；需要纯文本时加 `--plain-text` |
 | 结束整个托管会话 | `tide close <id>` |
 
@@ -66,13 +68,13 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | 命令 | 行为 |
 | --- | --- |
 | `run [--shell executable] [--cwd directory] [-- shell-args...]` | 在现有终端托管 shell |
-| `launch [--shell executable] [--cwd directory] [--with-command text \| --profile label] [--wait-idle] [--with-capture] [-- shell-args... \| -- <bin-args...>]` | 新开可见窗口；可自动发送命令、Enter，并等待和返回画面 |
+| `launch [--shell executable] [--cwd directory] [--with-command text \| --profile label] [--wait-idle] [--with-capture] [-- shell-args... \| -- <bin-args...>]` | 新开可见终端（Windows 为当前窗口的新标签页），bash 提示符带 `T<短 ID>`；可自动发送命令、Enter，并等待和返回画面 |
 | `profiles` | 列出 `.tide/launch-profiles.json` 里的 label、描述、env key 数量 |
 | `list` | 列出本机当前托管的 shell 会话，不扫描 CLI 历史 |
 | `info <id>` | 返回 Tide ID、PID、shell、目录等进程信息 |
 | `send <id> <text>` | 写入文本；加 `--with-enter` 在文本后发送回车 |
 | `send <id> --stdin` | 从管道读取 UTF-8 原文，适合长文本与多行 |
-| `send-key <id> <key> [keys...]` | 顺序发送具名按键或组合键 |
+| `send <id> --key <key> [keys...]` | 顺序发送具名按键或组合键 |
 | `scroll <id> up\|down [--steps N]` | 向支持鼠标的 TUI 发送滚轮事件 |
 | `resize <id> --cols N --rows N` | 请求外层窗口调整尺寸，返回实际尺寸 |
 | `capture <id> [--lines N] [--plain-text]` | 获取解析后的终端画面 |
@@ -85,30 +87,38 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 
 默认输出 JSON。`capture --plain-text` 只打印快照里的文本，保留空格、换行和屏幕空行，无 JSON、颜色转义或额外标题；输出区域比原窗口窄时，外层终端仍可能自动折行。
 
-`send-key` 示例：
+`send` 统一发送文本和按键：默认原样文本、不回车；`--key` 明确选择按键模式。空格分隔顺序，`+` 表示组合键，不根据内容猜测模式。
 
 ```bash
-tide send-key 5fefa Ctrl+U
-tide send-key 5fefa Ctrl+C
-tide send-key 5fefa Up Down
-tide send-key 5fefa Ctrl+Left
-tide send-key 5fefa Ctrl+Shift+Left
-tide send-key 5fefa Shift+Tab
-tide send-key 5fefa Alt+b
+tide send 5fefa Enter       # 输入单词 Enter
+tide send 5fefa --key Enter # 按回车
+tide send 5fefa q --wait-idle --with-capture # 当前分页器用 q 退出时
 ```
 
-支持 Enter/Escape/Tab/Backspace/Space、方向键/Home/End、Insert/Delete/PageUp/PageDown、F1–F12，以及可明确编码的 Ctrl/Alt/Shift 组合。Ctrl+字母映射控制字符，Alt+字母按字面大小写编码；导航键使用 xterm 修饰键序列。Shift+Enter、Ctrl+Enter、Win 等依赖额外协议或桌面行为的按键明确报错，不猜测或静默降级。多个键一次请求先全部校验再投递；需要观察中间画面时分次调用。
+按键示例：
+
+```bash
+tide send 5fefa --key Ctrl+U
+tide send 5fefa --key Ctrl+C
+tide send 5fefa --key Up Enter # 先 Up，再 Enter，中间不等待
+tide send 5fefa --key Ctrl+Left
+tide send 5fefa --key Ctrl+Shift+Left
+tide send 5fefa --key Shift+Tab
+tide send 5fefa --key Alt+b
+```
+
+支持 Enter/Escape/Tab/Backspace/Space、方向键/Home/End、Insert/Delete/PageUp/PageDown、F1–F12，以及可明确编码的 Ctrl/Alt/Shift 组合。Ctrl+字母映射控制字符，Alt+字母按字面大小写编码；导航键使用 xterm 修饰键序列。Shift+Enter、Ctrl+Enter、Win 等依赖额外协议或桌面行为的按键明确报错，不猜测或静默降级。每次支持 1..64 个键，先全部校验再投递；需要观察中间画面时分次调用。`--key` 不与文本、`--stdin` 或 `--with-enter` 混用；需要回车时将 Enter 写进键序列。普通字符（如 q）直接用文本模式发送。混用模式、非法按键或选项会在写入前整次拒绝，不执行前半段。
 
 `written: true` 只表示输入写进 PTY，不确认 CLI 已提交、执行或完成。请求断连/超时可能已经投递，不自动重发。用户手动输入和 Agent 输入可能交错，调用方应先观察画面再操作；核心不判断当前是否处于输入框或权限弹窗。
 
-`send` 和 `send-key` 均支持在文本/按键之后追加 `--wait-idle` 和 `--with-capture`，可单独使用或组合：
+`send` 的文本和按键模式均支持在文本/按键之后追加 `--wait-idle` 和 `--with-capture`，可单独使用或组合：
 
 ```bash
 tide send 5fefa '/help' --with-enter --wait-idle --with-capture
-tide send-key 5fefa Enter --wait-idle --idle-time 3 --timeout 60 --with-capture
+tide send 5fefa --key Enter --wait-idle --idle-time 3 --timeout 60 --with-capture
 ```
 
-执行顺序为发送、可选等待、可选抓屏；JSON 保留 `id`、`written`，按选项增加 `wait`（等待结果）和 `capture`（完整快照）。`--idle-time`、`--timeout` 必须与 `--wait-idle` 一起使用，默认值和独立等待命令相同。等待超时仍执行请求的抓屏，退出码为 3。只加 `--with-capture` 会立即抓屏，可能尚未看到程序响应；`send` 默认不提交，加 `--with-enter` 后先发送文本，短暂停顿后发送一次 Enter，再等待和抓屏。成功响应增加 `enterWritten: true`，仅表示回车已写入；回车失败保留 `written: true` 和 `error.stage: "send-key"`，需先检查画面再决定是否重试。文本是 ID 后的第一个参数，即使内容恰好为 `--wait-idle` 也按原文发送。`--stdin` 后同样可追加选项。
+执行顺序为发送、可选等待、可选抓屏；JSON 保留 `id`、`written`，按选项增加 `wait`（等待结果）和 `capture`（完整快照）。`--idle-time`、`--timeout` 必须与 `--wait-idle` 一起使用，默认值和独立等待命令相同。等待超时仍执行请求的抓屏，退出码为 3。只加 `--with-capture` 会立即抓屏，可能尚未看到程序响应；`send` 默认不提交，加 `--with-enter` 后先发送文本，短暂停顿后发送一次 Enter，再等待和抓屏。成功响应增加 `enterWritten: true`，仅表示回车已写入；回车失败保留 `written: true` 和 `error.stage: "enter"`，需先检查画面再决定是否重试。文本是 ID 后的第一个参数，只有 `--stdin` 和 `--key` 用于选择模式，其他内容（如 `--help`、`--wait-idle`）按原文发送。要输入字面量 `--stdin` 或 `--key`，使用管道传入 `--stdin`。`--stdin` 后同样可追加选项。
 
 发送确认后若等待或抓屏失败，仍返回 `written: true`，并附带 `error: {stage, message}`、stderr 错误和退出码 1，避免把观察失败误认为输入未送达。这些步骤不独占终端；其他人或 Agent 仍能同时输入。
 
@@ -116,7 +126,7 @@ tide send-key 5fefa Enter --wait-idle --idle-time 3 --timeout 60 --with-capture
 
 独立等待也可组合抓屏：`tide wait-idle <id> --idle-time 3 --timeout 30 --with-capture`。空闲或超时后均抓取画面，在原有 `id`、`idle`、`elapsedMs`、`idleForMs` 字段旁增加 `capture` 完整快照；超时仍返回退出码 3。抓屏失败时保留等待结果，增加 `error: {stage: "capture", message}`，退出码为 1。
 
-所有组合抓屏（`send`、`send-key`、`scroll`、`resize`、`wait-idle`）都可加 `--lines N`，与独立 `capture --lines N` 相同，范围 1..2000，须与 `--with-capture` 一起使用。它只控制返回的抓屏范围，等待仍比较整个当前画面。默认返回当前屏幕；全屏 TUI 通常没有历史滚动区。组合操作保留 JSON 中的执行结果和错误，纯文本输出使用独立 `capture --plain-text`。
+所有组合抓屏（`send`、`scroll`、`resize`、`wait-idle`）都可加 `--lines N`，与独立 `capture --lines N` 相同，范围 1..2000，须与 `--with-capture` 一起使用。它只控制返回的抓屏范围，等待仍比较整个当前画面。默认返回当前屏幕；全屏 TUI 通常没有历史滚动区。组合操作保留 JSON 中的执行结果和错误，纯文本输出使用独立 `capture --plain-text`。
 
 画面安静不等于任务完成或输入框已就绪；需要检查返回的 `capture` 或另行抓屏，加载中的程序也可能暂时无输出。等待不重发输入、不停止目标，调用连接断开后停止这次观察。
 

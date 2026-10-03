@@ -39,7 +39,7 @@ test("both bundled plugins recover only interrupted tasks through real Tide sess
       const request = <T = unknown>(command: Parameters<typeof requestSession>[1]) => requestSession<T>(id!, command, registry);
       const plugin = kind === "codex" ? "cxr" : "ccr";
       await request({ command: "send", text: `${quote(posix(process.execPath))} ${quote(posix(resolve("tests/fixtures/quota-cli.mjs")))} ${kind}` });
-      await request({ command: "send-key", keys: ["Enter"] });
+      await request({ command: "send", keys: ["Enter"] });
       await until(() => request<Snapshot>({ command: "capture" }), (screen) => screen.text.includes("RESUME_COUNT=0"));
       // Bundled plugins do not auto-watch; flip the monitor on after the CLI is up.
       await request({ command: "plugin", plugin, action: "watch", args: [] });
@@ -47,7 +47,7 @@ test("both bundled plugins recover only interrupted tasks through real Tide sess
       const normal = await request<{ monitor: { lastProbe: unknown } }>({ command: "plugin", plugin, action: "status", args: [] });
       assert.equal(normal.monitor.lastProbe, null, "Old visible limit plus newer completion must not probe");
       await request({ command: "send", text: "/limit" });
-      await request({ command: "send-key", keys: ["Enter"] });
+      await request({ command: "send", keys: ["Enter"] });
       if (kind === "claude") {
         const waiting = await until(async () => {
           try { return await request<{ monitor: { phase: string; nextProbeAt: number | null; lastResumeAt: number | null } }>({ command: "plugin", plugin, action: "status", args: [] }); }
@@ -65,7 +65,7 @@ test("both bundled plugins recover only interrupted tasks through real Tide sess
       const status = await request<{ monitor: { lastResumeAt: number; lastError: unknown } }>({ command: "plugin", plugin, action: "status", args: [] });
       assert(status.monitor.lastResumeAt > 0); assert.equal(status.monitor.lastError, null);
       await request({ command: "send", text: "/connection" });
-      await request({ command: "send-key", keys: ["Enter"] });
+      await request({ command: "send", keys: ["Enter"] });
       await until(() => request<Snapshot>({ command: "capture" }), (screen) => screen.text.includes("RESUME_COUNT=2"));
       await request({ command: "close" });
       await until(async () => exited, Boolean);

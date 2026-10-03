@@ -57,7 +57,7 @@ export class Screen {
     if (!["up", "down"].includes(direction) || !Number.isInteger(steps) || steps < 1 || steps > 100) throw Error("scroll requires up/down and --steps 1..100");
     const col = x ?? Math.ceil(this.terminal.cols / 2), row = y ?? Math.ceil(this.terminal.rows / 2);
     if (!Number.isInteger(col) || !Number.isInteger(row) || col < 1 || col > this.terminal.cols || row < 1 || row > this.terminal.rows) throw Error("Scroll coordinates must be 1-based cells inside the current screen");
-    if (["none", "x10"].includes(this.terminal.modes.mouseTrackingMode) || !this.sgrMouseEnabled || this.otherMouseEnabled) throw Error("Foreground program has not enabled supported SGR mouse scrolling; use capture --lines for shell history or explicit send-key navigation");
+    if (["none", "x10"].includes(this.terminal.modes.mouseTrackingMode) || !this.sgrMouseEnabled || this.otherMouseEnabled) throw Error("Foreground program has not enabled supported SGR mouse scrolling; use capture --lines for shell history or explicit send --key navigation");
     return `\x1b[<${direction === "up" ? 64 : 65};${col};${row}M`.repeat(steps);
   }
 
@@ -85,7 +85,7 @@ export class Screen {
 // line without tabs goes raw, so a target that is not in paste mode receives it
 // unharmed instead of a literal ESC[200~ marker.
 export function encodeText(text: string, bracketedPaste: boolean): string {
-  if (typeof text !== "string" || /[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(text)) throw Error("send accepts text only; use send-key for control keys");
+  if (typeof text !== "string" || /[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(text)) throw Error("Text input must be a string without control characters; use send --key for control keys");
   if (!/[\n\t]/.test(text)) return text;
   if (!bracketedPaste) throw Error("Multiline text and tabs require bracketed paste mode in the target application");
   return `\x1b[200~${text}\x1b[201~`;

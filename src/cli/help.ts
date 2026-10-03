@@ -105,8 +105,14 @@ For a new session with a known command, combine launch, text, Enter and observat
   tide launch --with-command "echo hello" --wait-idle --with-capture
 Use the returned id for subsequent commands and inspect the returned capture;
 no separate send, Enter or capture call is needed for this startup sequence.
-Windows requires Windows Terminal (wt.exe). Uses the current WT profile when
-available, otherwise its default profile, including its colors and font.
+Windows requires Windows Terminal (wt.exe). Opens a new tab in the most
+recently used window on the current desktop (a new window when none exists),
+so launch does not steal a window of its own. Uses the current WT profile when
+available, otherwise its default profile, including colors and font.
+The hosted shell is marked with T<id> (for example T3c3375b9) in front of the
+first prompt line, without color codes, so Tide sessions are easy to tell apart
+from terminals you opened yourself. bash only, injected through PROMPT_COMMAND
+so startup files that replace PS1 keep it; the rest of the prompt is unchanged.
 Without --with-command / --profile, returns once the session registers; use
 wait-idle <id> --with-capture to inspect startup. Registration alone is not
 readiness. --with-command text waits for 3 quiet startup seconds (30-second
@@ -163,70 +169,62 @@ OUTPUT
   ${info}
 EXAMPLE
   tide info abc123`,
-  send: `tide send <id> <text> [--with-enter] [--wait-idle] [--idle-time N] [--timeout N] [--with-capture] [--lines N]
-tide send <id> --stdin [same options]
+  send: `tide send <id> <text> [options]
+tide send <id> --stdin [options]
+tide send <id> --key <key> [keys...] [options]
 
-Fill the current terminal input with literal text. No Enter by default.
-Add --with-enter after the text to send Enter before optional waiting/capture.
-Inspect the latest returned capture to check the receiving program and prompt.
-Use a separate capture if the screen is unknown or may have changed since then.
-Use send-key for keys/chords; backslash escape notation is not decoded.
+Send literal text or explicit keys to the current foreground program.
+Text is never interpreted as a key name: Enter types the word; --key Enter
+presses Return. No automatic Enter; add --with-enter to submit text.
+Inspect a fresh capture before sending; the foreground program decides what
+input does. User and agent input share the terminal.
+Mixed input modes and invalid keys/options fail before any input is written.
 ${session}
 
-INPUT
+TEXT (default, or --stdin)
   Quote text as one argument using your calling shell's quoting rules.
-  --with-enter sends one Enter after a short paste-processing pause (150 ms).
-  This is not a readiness check; only use it when the current prompt can submit.
-  --stdin reads UTF-8 until EOF. It preserves newlines, including a trailing one.
-  Multiline text and tabs require the target to enable bracketed paste; otherwise
-  they are rejected. Other control characters are rejected; use send-key.
-  The literal text --help is allowed after <id>. To send the literal --stdin,
-  supply it through stdin instead.
+  --stdin reads UTF-8 until EOF, preserving newlines including a trailing one.
+  Multiline text and tabs require bracketed paste mode in the target; otherwise
+  they are rejected. Control characters are rejected; use --key for control keys.
+  Backslash escape notation is not decoded. Single-line text is sent raw, so
+  sending q (without --with-enter) can exit a pager that uses q to quit.
+  --with-enter sends Enter after a 150 ms paste-processing pause. This is not
+  a readiness check; only use it when the current prompt can submit.
+  The first argument after <id> is literal text except --stdin and --key, which
+  select an input mode. To send either of those literally, use --stdin.
   Git Bash: use bin/tide (or its installed tide entry) to preserve /help. Quotes
   do not disable MSYS path conversion when calling node dist/tide.mjs directly.
+
+KEYS (--key; case-sensitive names)
+  Space-separated keys run in order, not simultaneously: --key Up Enter presses
+  Up, then Enter. A + joins a chord: --key Ctrl+C. No pauses between keys.
+  Send 1..64 keys; all are validated before any are written. If the next key
+  depends on a changed screen, use separate calls and inspect capture between.
+  Enter Escape Tab Backspace Space
+  Up Down Left Right Home End Insert Delete PageUp PageDown F1..F12
+  Ctrl+A..Ctrl+Z, Ctrl+Space, Alt+letters/digits, Ctrl+Alt+letters, Shift+Tab
+  Navigation/function keys accept Ctrl/Alt/Shift, e.g. Ctrl+Shift+Left.
+  Alt+letter preserves case. Ctrl+Enter, Shift+Enter and Win keys are unsupported.
+  Use names, not raw ANSI codes. Ordinary text (including q) needs no --key.
+  --key cannot combine with text, --stdin or --with-enter; include Enter in the
+  key sequence instead. Ctrl+C usually interrupts, not closes the Tide session.
 
 ${afterSend}
 
 OUTPUT
-  JSON {id, written: true}: text written to the PTY, not proof of completion.
+  JSON {id, written: true}: input written to the PTY, not proof of completion.
   With --with-enter, enterWritten: true confirms the Enter write was acknowledged.
-  If Enter fails, written remains true with error.stage=send-key and exit 1;
+  If Enter fails, written remains true with error.stage=enter and exit 1;
   delivery may be uncertain. Inspect the screen before retrying.
   On transport failure, capture before retrying: input may already have arrived.
 EXAMPLES (Bash)
   tide send abc123 'echo hello' --with-enter --wait-idle --with-capture
-  tide send abc123 '/help' --with-enter --wait-idle --with-capture
   tide send abc123 'draft text' --with-capture
-  tide send-key abc123 Enter --wait-idle --timeout 60 --with-capture
+  tide send abc123 q --wait-idle --with-capture
+  tide send abc123 --key Enter --wait-idle --timeout 60 --with-capture
+  tide send abc123 --key Up Enter
+  tide send abc123 --key Ctrl+C --wait-idle --with-capture
   printf '%s' 'Explain this function' | tide send abc123 --stdin --with-enter --wait-idle --with-capture`,
-  "send-key": `tide send-key <id> <key> [keys...] [--wait-idle] [--idle-time N] [--timeout N] [--with-capture] [--lines N]
-
-Send 1..64 named keys/chords in order, with no pauses between them.
-All keys are validated before any are written. Separate calls and capture between
-them when the next key depends on a changed screen. Use send for ordinary text.
-${session}
-
-KEYS (case-sensitive names)
-  Enter Escape Tab Backspace Space
-  Up Down Left Right Home End Insert Delete PageUp PageDown F1..F12
-  Ctrl+A..Ctrl+Z, Ctrl+Space, Alt+letters/digits, Ctrl+Alt+letters, Shift+Tab
-  Navigation/function keys accept Ctrl/Alt/Shift combinations, e.g. Ctrl+Left,
-  Ctrl+Shift+Left. Alt+letter preserves the letter's case.
-  Ctrl+Enter, Shift+Enter and Win keys are unsupported and fail explicitly.
-  Supply names, not raw ANSI escape codes. The foreground program decides what
-  a key does: Ctrl+C usually interrupts; it does not mean close the Tide session.
-
-${afterSend}
-
-OUTPUT
-  JSON {id, written: true}; delivery does not confirm the program acted on it.
-  After a transport failure, capture before retrying.
-EXAMPLES
-  tide send-key abc123 Enter
-  tide send-key abc123 Ctrl+C
-  tide send-key abc123 Up Enter
-  tide send-key abc123 Enter --wait-idle --timeout 60 --with-capture
-  tide send-key abc123 Ctrl+Shift+Left`,
   capture: `tide capture <id> [--lines N] [--plain-text]
 
 Read a rendered terminal snapshot after parsing cursor movement and ANSI controls.
@@ -279,7 +277,7 @@ EXAMPLE
   close: `tide close <id>
 
 Terminate the hosted shell and unregister its Tide session. This can end ongoing
-work. To interrupt only the foreground task, consider send-key <id> Ctrl+C.
+work. To interrupt only the foreground task, consider send <id> --key Ctrl+C.
 ${session}
 
 OUTPUT
@@ -386,8 +384,8 @@ COMMANDS
   launch [options]                Open a terminal; --with-command submits a command
   list                           Discover live sessions and IDs
   info <id>                      Read shell metadata (not agent/task status)
-  send <id> <text> | --stdin       Fill text; --with-enter optionally submits
-  send-key <id> <key> [keys...]    Send named keys/chords, e.g. Enter or Ctrl+C
+  send <id> <text> | --stdin       Send literal text; --with-enter submits
+  send <id> --key <key> [keys...]  Send keys in order; + joins chords, e.g. Ctrl+C
   scroll <id> up|down [--steps N]  Send wheel events to a mouse-enabled TUI
   resize <id> --cols N --rows N    Request visible window size; report actual size
   capture <id> [--lines N] [--plain-text]   Read the rendered terminal screen
@@ -413,12 +411,14 @@ AGENT WORKFLOW
   Existing session: tide list, then tide capture <id> to check its current prompt;
   continue from step 2. Reuse a fresh returned capture instead of capturing twice.
   If startup needs inspection: tide launch, then tide wait-idle <id> --with-capture.
-  Submit existing input or confirm a prompt: tide send-key <id> Enter --wait-idle --with-capture
+  Submit existing input or confirm a prompt: tide send <id> --key Enter --wait-idle --with-capture
   Fill without submitting: tide send <id> 'your text' --with-capture
-  Interrupt foreground work: tide send-key <id> Ctrl+C --wait-idle --with-capture
-  Choose keys from the current prompt. User and agent input share the terminal.
+  Interrupt foreground work: tide send <id> --key Ctrl+C --wait-idle --with-capture
+  Exit a pager that uses q: tide send <id> q --wait-idle --with-capture
+  Text is literal; --key selects special keys. Up Enter is sequential; Ctrl+C is a chord.
+  Choose input from the current prompt. User and agent input share the terminal.
   --with-command includes Enter; send requires --with-enter to submit text.
-  Observation options follow send text/send-key keys; launch options go before
+  Observation options follow send text or the --key sequence; launch options go before
   -- shell-args. Post-command waiting defaults to 3 quiet seconds, 30 seconds
   maximum; --idle-time/--timeout customize it. Every combined
   capture accepts --lines N (1..2000) for occasional additional context.

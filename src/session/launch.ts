@@ -13,12 +13,14 @@ const shQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 export function launchCommand(platform: string, node: string, entry: string, id: string, cwd: string, script: string, windows?: { state: string; profile?: string | undefined }) {
   if (platform === "win32") {
     if (!windows) throw Error("Windows launch requires a state directory");
-    const args = ["-w", "new", "new-tab", ...(windows.profile ? ["--profile", windows.profile] : []), "--startingDirectory", cwd, node, entry, "__host", id, windows.state];
+    // -w 0 targets the most recently used window on this desktop: a new tab there, or a new
+    // window when none exists. -w new would override the user's windowingBehavior setting.
+    const args = ["-w", "0", "new-tab", ...(windows.profile ? ["--profile", windows.profile] : []), "--startingDirectory", cwd, node, entry, "__host", id, windows.state];
     // wt parses semicolons as command separators even without a shell.
     return { binary: "wt.exe", args: args.map((arg) => arg.replaceAll(";", "\\;")) };
   }
   if (platform === "darwin") return { binary: "open", args: ["-a", "Terminal", script] };
-  throw Error("New-window launch supports Windows and macOS; use tide run in your current terminal");
+  throw Error("Opening a terminal supports Windows and macOS; use tide run in your current terminal");
 }
 
 function handoffPath(id: string, state: string) { return join(state, "terminal-launches", `${validateId(id)}.json`); }
@@ -55,7 +57,7 @@ export async function launchSession(options: ShellOptions): Promise<SessionInfo>
       if (record) return await rpc<SessionInfo>(record, { command: "info" });
       await sleep(100);
     }
-    throw Error(`Terminal did not register within 10 seconds: ${id}. Inspect the opened window; do not blindly relaunch.`);
+    throw Error(`Terminal did not register within 10 seconds: ${id}. Inspect the opened tab; do not blindly relaunch.`);
   } finally {
     for (const file of [path, script]) { try { unlinkSync(file); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
   }

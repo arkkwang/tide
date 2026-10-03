@@ -76,17 +76,17 @@ function afterSendOptions(args: string[], { allowEnter = false, waitImplied = fa
   return { wait: wait || waitImplied, capture, enter, idleTime, timeout, lines };
 }
 
-async function sendAndObserve(id: string, request: Extract<Request, { command: "send" | "send-key" | "scroll" | "resize" }>, options: ReturnType<typeof afterSendOptions>, launched?: SessionInfo) {
+async function sendAndObserve(id: string, request: Extract<Request, { command: "send" | "scroll" | "resize" }>, options: ReturnType<typeof afterSendOptions>, launched?: SessionInfo) {
   const result = await requestSession<{ id: string; written?: true; applied?: boolean }>(id, request);
   if (result.applied === false) process.exitCode = 3;
   const output: typeof result & { enterWritten?: true; wait?: IdleResult; capture?: Snapshot; error?: { stage: string; message: string } } = { ...launched, ...result };
-  let stage = "send-key";
+  let stage = "enter";
   try {
     // Pin follow-up requests to the acknowledged full ID, never re-resolve a prefix.
     if (options.enter) {
       // Let the foreground TUI process pasted text before submitting it.
       await sleep(150);
-      await requestSession(result.id, { command: "send-key", keys: ["Enter"] });
+      await requestSession(result.id, { command: "send", keys: ["Enter"] });
       output.enterWritten = true;
     }
     stage = "wait-idle";
@@ -298,17 +298,23 @@ async function main() {
     }
     case "send": {
       expectCount(rest, 1, Infinity);
-      const options = afterSendOptions(rest.slice(1), { allowEnter: true });
-      if (rest[0] === "--stdin" && process.stdin.isTTY) throw Error("--stdin requires piped input");
-      const text = rest[0] === "--stdin" ? readFileSync(0, "utf8") : rest[0]!;
-      await sendAndObserve(id, { command, text }, options); break;
-    }
-    case "send-key": {
-      const optionIndex = rest.findIndex((arg) => arg.startsWith("--"));
-      const keys = optionIndex < 0 ? rest : rest.slice(0, optionIndex);
-      const options = afterSendOptions(optionIndex < 0 ? [] : rest.slice(optionIndex));
-      expectCount(keys, 1, 64);
-      await sendAndObserve(id, { command, keys }, options); break;
+      if (rest[0] === "--key") {
+        const input = rest.slice(1);
+        if (input.includes("--stdin") || input.includes("--key")) throw Error("Choose one input mode: text, --stdin, or --key; mixed input is not supported");
+        if (input.includes("--with-enter")) throw Error("--with-enter is for text only; append Enter to the --key sequence instead");
+        const optionIndex = input.findIndex((arg) => arg.startsWith("--"));
+        const keys = optionIndex < 0 ? input : input.slice(0, optionIndex);
+        if (keys.length < 1 || keys.length > 64) throw Error("--key requires 1..64 keys; e.g. --key Up Enter (in order), or --key Ctrl+C (a chord)");
+        const options = afterSendOptions(optionIndex < 0 ? [] : input.slice(optionIndex));
+        await sendAndObserve(id, { command, keys }, options);
+      } else {
+        if (rest.slice(1).includes("--key")) throw Error("Text cannot combine with --key; use --with-enter to submit text, or separate send calls for other keys");
+        const options = afterSendOptions(rest.slice(1), { allowEnter: true });
+        if (rest[0] === "--stdin" && process.stdin.isTTY) throw Error("--stdin requires piped input");
+        const text = rest[0] === "--stdin" ? readFileSync(0, "utf8") : rest[0]!;
+        await sendAndObserve(id, { command, text }, options);
+      }
+      break;
     }
     case "capture": {
       let lines: number | undefined, plain = false;

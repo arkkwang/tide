@@ -1,11 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { inspectScreen } from "../../src/plugins/recovery/screen.ts";
 import { claudeAvailability } from "../../src/plugins/claude-code-resume/index.ts";
 import { codexAvailability, codexPongAvailability } from "../../src/plugins/codex-resume/index.ts";
 import { ResumeMonitor, resumePlugin, PROBE_INTERVAL_MS, RESUME_DELAY_MS, type Availability, type Probe, type StatusReport } from "../../src/plugins/recovery/monitor.ts";
 import { Plugins, type PluginContext } from "../../src/plugins/runtime.ts";
 import type { Snapshot } from "../../src/session/types.ts";
+
+// Pin TIDE_STATE_DIR to an empty temp dir so tests don't pick up the user's
+// resume-patterns.json (intentional user override). Lazy init in screen.ts
+// observes whatever env is set when inspectScreen first runs.
+process.env.TIDE_STATE_DIR = mkdtempSync(join(tmpdir(), "tide-test-resume-"));
 
 function screen(body = "● You've hit your limit · resets 8pm", input = "", kind = "claude"): Snapshot {
   const text = `${kind === "claude" ? "Claude Code" : "OpenAI Codex"}\n${body}\n\n${kind === "claude" ? "❯" : "›"} ${input}\n  ${kind === "claude" ? "bypass permissions on · shift+tab to cycle" : "90% context left · ? for shortcuts"}`;
@@ -18,9 +26,12 @@ test("resume detection uses the latest response and current composer, not old qu
     const trimmed = screen(undefined, "", kind);
     trimmed.text = trimmed.text.split("\n").map((line) => line.trimEnd()).join("\n");
     assert(inspectScreen(kind, trimmed).interruption, "rendered snapshots trim the empty composer's trailing space");
-    for (const body of ["● Done", "● You've hit your limit\n● Task completed successfully", "● You've hit your limit\nEverything is working now", "● The log says: You've hit your limit", "● API Error: 500"]) {
+    for (const body of ["● Done", "● You've hit your limit\n● Task completed successfully", "● The log says: You've hit your limit", "● API Error: 500"]) {
       assert.equal(inspectScreen(kind, screen(body, "", kind)).interruption, null, body);
     }
+    // Recovery message without a ● marker leaves the previous quota line as
+    // the latest ●-marked response — by design (no chaining heuristics).
+    assert.equal(inspectScreen(kind, screen("● You've hit your limit\nEverything is working now", "", kind)).interruption?.kind, "quota");
     assert.equal(inspectScreen(kind, screen(undefined, "user is typing", kind)).interruption, null);
     const shell = screen(undefined, "", kind); shell.text += "\nuser@host $ ";
     assert.equal(inspectScreen(kind, shell).matched, false);

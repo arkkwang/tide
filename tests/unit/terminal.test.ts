@@ -9,6 +9,7 @@ import type { SessionInfo } from "../../src/session/types.ts";
 import { waitIdle } from "../../src/terminal/idle.ts";
 import { requestResize } from "../../src/terminal/resize.ts";
 import { defaultProfile, windowsTerminalProfile } from "../../src/terminal/windows-profile.ts";
+import { promptEnv } from "../../src/terminal/shell.ts";
 import { setTimeout as sleep } from "node:timers/promises";
 
 test("session activity tracks rendered changes independently of raw output and reads", async () => {
@@ -104,8 +105,8 @@ test("text does not submit and rejects control sequence injection", () => {
   assert.equal(encodeText("你好\n第二行", true), "\x1b[200~你好\n第二行\x1b[201~");
   assert.equal(encodeText("a\tb", true), "\x1b[200~a\tb\x1b[201~");
   assert.throws(() => encodeText("a\nb", false), /bracketed paste/);
-  assert.throws(() => encodeText("\x1b[201~rm", true), /send-key/);
-  assert.throws(() => encodeText("\x9b31m", true), /send-key/);
+  assert.throws(() => encodeText("\x1b[201~rm", true), /send --key/);
+  assert.throws(() => encodeText("\x9b31m", true), /send --key/);
 });
 
 test("named chords encode terminal keys and reject ambiguous unsupported chords", () => {
@@ -159,7 +160,7 @@ test("plugins reuse the input channel, re-detect before writes, and stop observe
 test("window launch uses Windows Terminal profiles without shell interpolation", () => {
   const windows = launchCommand("win32", "C:\\Node JS\\node.exe", "D:\\a b\\tide.mjs", "abc", "D:\\a'b", "unused", { state: "D:\\private state", profile: "{profile-id}" });
   assert.equal(windows.binary, "wt.exe");
-  assert.deepEqual(windows.args, ["-w", "new", "new-tab", "--profile", "{profile-id}", "--startingDirectory", "D:\\a'b", "C:\\Node JS\\node.exe", "D:\\a b\\tide.mjs", "__host", "abc", "D:\\private state"]);
+  assert.deepEqual(windows.args, ["-w", "0", "new-tab", "--profile", "{profile-id}", "--startingDirectory", "D:\\a'b", "C:\\Node JS\\node.exe", "D:\\a b\\tide.mjs", "__host", "abc", "D:\\private state"]);
   const defaults = launchCommand("win32", "node", "entry", "abc", "cwd", "unused", { state: "state" });
   assert(!defaults.args.includes("--profile"));
   assert(launchCommand("win32", "node", "entry", "abc", "D:\\semi;colon", "unused", { state: "state" }).args.includes("D:\\semi\\;colon"));
@@ -174,6 +175,16 @@ test("Windows Terminal default profile handles JSONC without matching comments o
   assert.equal(defaultProfile('{"profiles":{"defaultProfile":"nested"}}'), undefined);
   assert.equal(windowsTerminalProfile({ WT_PROFILE_ID: "{current}" }), "{current}");
   assert.throws(() => windowsTerminalProfile({}), /preferred Windows Terminal profile/);
+});
+
+test("bash prompts carry the Tide session marker, other shells keep their own", () => {
+  const env = promptEnv("C:\\Program Files\\Git\\bin\\bash.exe", "3c3375b9-8d89-49a5-966b-8145f8a503b7");
+  assert.match(env.PROMPT_COMMAND!, /^case "\$PS1" in \*"T3c3375b9"\*\)/);
+  assert.match(env.PROMPT_COMMAND!, /PS1="T3c3375b9 \$PS1"/);
+  assert.doesNotMatch(env.PROMPT_COMMAND!, /45;97|\\e\[/);
+  assert.match(promptEnv("bash", "abc", "echo inherited").PROMPT_COMMAND!, /; echo inherited$/);
+  assert.doesNotMatch(promptEnv("bash", "abc", "").PROMPT_COMMAND!, /inherited/);
+  for (const shell of ["zsh", "pwsh.exe", "cmd.exe", "sh"]) assert.deepEqual(promptEnv(shell, "abc"), {});
 });
 
 test("wait-idle counts unchanged rendered content, times out on changes and cancels", async () => {

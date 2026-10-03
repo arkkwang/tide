@@ -20,6 +20,6 @@ export function encodeKey(name: string, applicationCursor = false): string {
     value = { Enter: "\r", Escape: "\x1b", Tab: "\t", Backspace: "\x7f", Space: " " }[key];
     if (!value && alt && /^[a-zA-Z0-9]$/.test(key)) value = key;
   }
-  if (value === undefined) throw Error(`Unsupported key: ${name}. Use named keys such as Enter, Up, Ctrl+C, Alt+B, Shift+Tab or Ctrl+Shift+Left`);
+  if (value === undefined) throw Error(`Unsupported key: ${name}. Use named keys such as Enter, Up, Ctrl+C, Alt+B, Shift+Tab or Ctrl+Shift+Left. For literal text, use tide send <id> '<text>' (no Enter by default)`);
   return alt ? `\x1b${value}` : value;
 }

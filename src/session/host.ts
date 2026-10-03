@@ -8,7 +8,7 @@ import { encodeKey } from "../terminal/keys.js";
 import { Registry, validateId } from "./registry.js";
 import { listen } from "./ipc.js";
 import { loadPlugins, Plugins } from "../plugins/runtime.js";
-import { shellCommand } from "../terminal/shell.js";
+import { shellCommand, promptEnv } from "../terminal/shell.js";
 import { waitIdle } from "../terminal/idle.js";
 import { configureWindowsConsole } from "../terminal/windows-console.js";
 import { writeTerminalOutput } from "../terminal/output.js";
@@ -24,7 +24,7 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
   const cols = process.stdout.columns || 100, rows = process.stdout.rows || 30;
   const screen = new Screen(cols, rows);
   const child = pty.spawn(shell, args, { name: "xterm-256color", cols, rows, cwd,
-    env: { ...process.env, TERM: process.env.TERM && process.env.TERM !== "dumb" ? process.env.TERM : "xterm-256color", TIDE_SESSION_ID: id, TIDE_STATE_DIR: registry.state, TIDE_ENTRY: process.argv[1]! },
+    env: { ...process.env, TERM: process.env.TERM && process.env.TERM !== "dumb" ? process.env.TERM : "xterm-256color", TIDE_SESSION_ID: id, TIDE_STATE_DIR: registry.state, TIDE_ENTRY: process.argv[1]!, ...promptEnv(shell, id) },
   });
   const socketDirectory = join(tmpdir(), `tide-${process.getuid?.() ?? "local"}`);
   if (process.platform !== "win32") mkdirSync(socketDirectory, { recursive: true, mode: 0o700 });
@@ -43,7 +43,7 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
   };
   const send = (text: string) => enqueue(async () => child.write(encodeText(text, (await screen.modes()).bracketedPasteMode)));
   const sendKey = (...keys: string[]) => enqueue(async () => {
-    if (!keys.length || !keys.every((key) => typeof key === "string")) throw Error("send-key needs one or more named keys");
+    if (!keys.length || keys.length > 64 || !keys.every((key) => typeof key === "string")) throw Error("send --key requires 1..64 named keys/chords");
     const mode = (await screen.modes()).applicationCursorKeysMode;
     // Validate the whole sequence before writing any of it.
     const encoded = keys.map((key) => encodeKey(key, mode));
@@ -90,7 +90,14 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
         case "info": return { ...info, ...await screen.activity() };
         case "capture": return screen.capture(id, request.lines);
         case "wait-idle": return waitIdle(() => screen.capture(id), request.idleTime, request.timeout, signal);
-        case "send": await send(request.text); return { id, written: true };
+        case "send": {
+          if (("text" in request) === ("keys" in request)) throw Error("send requires exactly one of text or keys");
+          if ("keys" in request) {
+            if (!Array.isArray(request.keys)) throw Error("keys must be an array");
+            await sendKey(...request.keys);
+          } else await send(request.text);
+          return { id, written: true };
+        }
         case "scroll": await enqueue(async () => child.write(await screen.scroll(request.direction, request.steps, request.x, request.y))); return { id, written: true };
         case "resize": {
           let result: Awaited<ReturnType<typeof requestResize>> | undefined;
@@ -100,7 +107,6 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
           });
           return { id, ...result };
         }
-        case "send-key": if (!Array.isArray(request.keys)) throw Error("keys must be an array"); await sendKey(...request.keys); return { id, written: true };
         case "plugins": return plugins.list();
         case "plugin":
           if (!Array.isArray(request.args) || !request.args.every((arg) => typeof arg === "string")) throw Error("Plugin args must be strings");

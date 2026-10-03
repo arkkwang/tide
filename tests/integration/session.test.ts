@@ -6,7 +6,7 @@ import { resolve, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Registry } from "../../src/session/registry.ts";
 import { liveSessions, requestSession, rpc } from "../../src/session/ipc.ts";
-import type { SessionInfo, Snapshot } from "../../src/session/types.ts";
+import type { SessionInfo, Snapshot, Request } from "../../src/session/types.ts";
 
 const entry = resolve("dist/tide.mjs");
 const shell = process.platform === "win32" ? spawnSync("where.exe", ["bash.exe"], { encoding: "utf8", windowsHide: true }).stdout.split(/\r?\n/).find((p) => p && !/WindowsApps/i.test(p)) : "/bin/bash";
@@ -68,15 +68,15 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     const pluginLiteral = await cli(['screen', 'contains', short, '/help'], true);
     assert.equal(pluginLiteral.code, 0, pluginLiteral.err);
     assert.equal(JSON.parse(pluginLiteral.out).found, true, pluginLiteral.out);
-    assert.equal((await cli(["send-key", short, "Ctrl+U"], true)).code, 0);
+    assert.equal((await cli(["send", short, "--key", "Ctrl+U"], true)).code, 0);
     const literalHelp = await cli(["send", short, "--help"], true);
     assert.equal(literalHelp.code, 0, literalHelp.err);
     assert.equal(JSON.parse(literalHelp.out).written, true);
     await until(short, (s) => s.text.includes("--help"));
-    assert.equal((await cli(["send-key", short, "Ctrl+U"], true)).code, 0);
+    assert.equal((await cli(["send", short, "--key", "Ctrl+U"], true)).code, 0);
     await requestSession(short, { command: "send", text: "printf 'FORMAL_%s_OK\\n' SHELL" }, registry);
     assert(!(await requestSession<Snapshot>(short, { command: "capture" }, registry)).text.includes("FORMAL_SHELL_OK"));
-    await requestSession(short, { command: "send-key", keys: ["Enter"] }, registry);
+    await requestSession(short, { command: "send", keys: ["Enter"] }, registry);
     await until(short, (s) => s.text.includes("FORMAL_SHELL_OK"));
     await cli(['wait-idle', short, '--idle-time', '0.2', '--timeout', '3']);
     const activity = JSON.parse((await cli(['info', short])).out) as SessionInfo;
@@ -119,7 +119,7 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     assert.equal(combined.code, 0, combined.err);
     assert.equal(JSON.parse(combined.out).wait.idle, true);
     assert(!JSON.parse(combined.out).capture.text.includes('COMBINED_SHELL_OK'));
-    const submitted = await cli(['send-key', short, 'Enter', '--wait-idle', '--timeout', '6', '--with-capture']);
+    const submitted = await cli(['send', short, '--key', 'Enter', '--wait-idle', '--timeout', '6', '--with-capture']);
     assert.equal(submitted.code, 0, submitted.err);
     assert(JSON.parse(submitted.out).capture.text.includes('COMBINED_SHELL_OK'), submitted.out);
     for (const piped of [false, true]) {
@@ -129,7 +129,7 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
       assert.equal(JSON.parse(result.out).enterWritten, true);
       assert(JSON.parse(result.out).capture.text.includes(`ENTER_${piped ? 'STDIN' : 'TEXT'}_OK`));
     }
-    const timeoutCapture = await cli(['send-key', short, 'Ctrl+U', '--wait-idle', '--timeout', '0', '--with-capture']);
+    const timeoutCapture = await cli(['send', short, '--key', 'Ctrl+U', '--wait-idle', '--timeout', '0', '--with-capture']);
     assert.equal(timeoutCapture.code, 3);
     assert.equal(JSON.parse(timeoutCapture.out).wait.idle, false);
     assert.equal(JSON.parse(timeoutCapture.out).capture.id, a.id);
@@ -139,7 +139,7 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     assert.equal(JSON.parse(immediate.out).wait, undefined);
     for (const args of [
       ['send', short, '', '--lines', '5', '--with-capture'],
-      ['send-key', short, 'Ctrl+U', '--with-capture', '--lines', '5'],
+      ['send', short, '--key', 'Ctrl+U', '--with-capture', '--lines', '5'],
       ['resize', short, '--cols', String(dimensions.cols), '--lines', '5', '--rows', String(dimensions.rows), '--with-capture'],
       ['wait-idle', short, '--lines', '5', '--timeout', '0', '--with-capture'],
     ]) {
@@ -158,20 +158,20 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     const stdin = await cli(['send', short, '--stdin', '--wait-idle', '--idle-time', '0.1', '--with-capture'], false, '--wait-idle');
     assert.equal(stdin.code, 0, stdin.err);
     assert(JSON.parse(stdin.out).capture.text.includes('--wait-idle'));
-    await cli(['send-key', short, 'Ctrl+U']);
+    await cli(['send', short, '--key', 'Ctrl+U']);
     for (const args of [
       ['wait-idle', short, '--with-capture', '--timeout', '-1'],
       ['wait-idle', short, '--with-captur'],
       ['wait-idle', short, '--lines', '5'],
       ['send', short, 'NEVER_INVALID_INPUT', '--with-enter', '--lines', '5'],
       ['send', short, 'NEVER_INVALID_INPUT', '--with-capture', '--lines', '0'],
-      ['send-key', short, 'Enter', '--with-capture', '--lines', '2001'],
+      ['send', short, '--key', 'Enter', '--with-capture', '--lines', '2001'],
       ['scroll', short, 'up', '--with-capture', '--lines', '1.5'],
       ['resize', short, '--cols', '100', '--rows', '30', '--lines', '5'],
       ['send', short, 'NEVER_INVALID_INPUT', '--timeout', '1'],
       ['send', short, 'NEVER_INVALID_INPUT', '--wait-idle', '--idle-time', '-1'],
-      ['send-key', short, 'Enter', '--with-captur'],
-      ['send-key', short, 'Enter', '--with-enter'],
+      ['send', short, '--key', 'Enter', '--with-captur'],
+      ['send', short, '--key', 'Enter', '--with-enter'],
       ['send', short, 'NEVER_INVALID_INPUT', '--with-enter', '--bad-option'],
       ['scroll', short, 'left'],
       ['scroll', short, 'up', '--steps', '0'],
@@ -202,8 +202,50 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     // The plugin's own help marks which commands accept --all.
     assert.match((await cli(["screen", "--help"])).out, /^  contains\* /m);
     t.diagnostic('plugin command passed');
-    const bad = await cli(["send-key", short, "Enter", "Win+R"]);
-    assert.notEqual(bad.code, 0);
+    // Raw input proves literal text, ordered keys and zero partial writes on errors.
+    const probe = `${quote(process.execPath.replaceAll("\\", "/"))} ${quote(resolve("tests/fixtures/input-probe.mjs").replaceAll("\\", "/"))}`;
+    const startedProbe = await cli(['send', short, probe, '--with-enter']);
+    assert.equal(startedProbe.code, 0, startedProbe.err);
+    await until(short, (s) => s.text.includes('INPUT_PROBE_READY'));
+    for (const args of [
+      ['send-key', short, 'Enter'], // No historical alias.
+      ['send', short, 'NEVER_MIXED_TEXT', '--key', 'Enter'],
+      ['send', short, '--stdin', '--key', 'Enter'],
+      ['send', short, '--key', 'Enter', '--stdin'],
+      ['send', short, '--key', 'Enter', '--with-enter'],
+      ['send', short, '--key', 'Enter', 'Win+R'],
+      ['send', short, '--key', 'Ctrl+U', 'hello', 'Enter'],
+      ['send', short, '--key', 'Enter', '--key', 'Up'],
+      ['send', short, '--key', ...Array(65).fill('Enter')],
+    ]) {
+      const rejected = await cli(args, false, 'NEVER_STDIN_TEXT');
+      assert.equal(rejected.code, 1, rejected.err);
+      assert.equal(rejected.out, '');
+    }
+    for (const request of [
+      { command: 'send', text: 'NEVER_RPC_TEXT', keys: ['Enter'] },
+      { command: 'send' },
+      { command: 'send', keys: 'Enter' },
+      { command: 'send', keys: [] },
+      { command: 'send', keys: Array(65).fill('Enter') },
+      { command: 'send', keys: ['Enter', 'Win+R'] },
+      { command: 'send', keys: ['Enter', 1] },
+    ]) await assert.rejects(requestSession(short, request as Request, registry));
+    for (const text of ['Enter', 'Ctrl+C', 'q']) {
+      const literal = await cli(['send', short, text]);
+      assert.equal(literal.code, 0, literal.err);
+    }
+    for (const text of ['--key', '--stdin']) {
+      const literal = await cli(['send', short, '--stdin'], false, text);
+      assert.equal(literal.code, 0, literal.err);
+    }
+    const beforeEnter = await requestSession<Snapshot>(short, { command: 'capture' }, registry);
+    assert(!beforeEnter.text.includes('INPUT_PROBE_BYTES:'));
+    const sequence = await cli(['send', short, '--key', 'Up', 'Enter']);
+    assert.equal(sequence.code, 0, sequence.err);
+    const received = await until(short, (s) => s.text.includes('INPUT_PROBE_BYTES:'));
+    const expectedBytes = Buffer.from('EnterCtrl+Cq--key--stdin\x1b[A\r').toString('hex');
+    assert.equal(received.text.match(/INPUT_PROBE_BYTES:([0-9a-f]+)/)?.[1], expectedBytes);
     // A colliding registration must block prefix routing before any write.
     const record = registry.records().find((r) => r.id === a.id)!;
     const collision = { ...record, id: `${record.id.slice(0, -1)}${record.id.endsWith("0") ? "1" : "0"}` };
@@ -215,7 +257,7 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     // Observation failure must not hide an acknowledged input write.
     await cli(['send', b.id, 'sleep 0.3; exit 7']);
     // ConPTY may report shell exit after the final screen has already gone quiet.
-    const endedWhileWaiting = await cli(['send-key', b.id, 'Enter', '--wait-idle', '--idle-time', '10', '--timeout', '15', '--with-capture']);
+    const endedWhileWaiting = await cli(['send', b.id, '--key', 'Enter', '--wait-idle', '--idle-time', '10', '--timeout', '15', '--with-capture']);
     assert.equal(endedWhileWaiting.code, 1, endedWhileWaiting.out);
     assert.equal(JSON.parse(endedWhileWaiting.out).written, true);
     // Host shutdown can race with either observation request.
@@ -268,6 +310,7 @@ test("launch submits a command and returns its rendered output in one call", { s
     assert.equal(launched.capture.id, launched.id);
     assert.equal(typeof launched.shellPid, "number");
     assert.match(launched.capture.text, /LAUNCH_COMBINED_OK/);
+    assert.ok(launched.capture.text.includes(`T${launched.id.slice(0, 8)}`), `prompt marker missing: ${launched.capture.text}`);
     assert.doesNotMatch(launched.capture.text, /__git_ps1: command not found/);
     const timed = cli("launch", "--with-command", "printf 'TIMEOUT_%s_OK\\n' LAUNCH", "--shell", shell!, "--wait-idle", "--timeout", "0", "--with-capture", "--lines", "5", "--", "--noprofile", "--norc", "-i");
     assert.equal(timed.status, 3, timed.stderr);
