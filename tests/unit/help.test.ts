@@ -40,11 +40,11 @@ test("launch validates combined options before opening a terminal", () => {
     [["launch", "--with-command", ""], /needs a command/],
     [["launch", "--with-command", "echo ok", "--with-command", "echo twice"], /only be supplied once/],
     [["launch", "--with-command", "echo ok\nexit"], /single line/],
-    [["launch", "--with-command", "echo ok", "--lines", "5"], /requires --with-capture/],
+    [["launch", "--with-command", "echo ok", "--lines", "5"], /requires --with-read/],
     [["launch", "--with-command", "echo ok", "--timeout", "1"], /require --wait-idle/],
-    [["launch", "--with-command", "echo ok", "--with-capture", "--lines", "0"], /1..2000/],
+    [["launch", "--with-command", "echo ok", "--with-read", "--lines", "0"], /1..2000/],
     [["launch", "--with-command", "echo ok", "--with-enter"], /Unknown operation option/],
-    [["launch", "--with-capture"], /require --with-command/],
+    [["launch", "--with-read"], /require --with-command/],
     [["run", "--with-command", "echo ok"], /Unknown launch option/],
   ] as Array<[string[], RegExp]>) {
     const result = cli(...args);
@@ -63,7 +63,7 @@ test("send help explains literal input, ordered keys and exclusive modes without
   assert.match(detail, /Enter types the word; --key Enter/);
   assert.match(detail, /in order, not simultaneously/);
   assert.match(detail, /cannot combine with text, --stdin or --with-enter/);
-  assert.match(detail, /tide send abc123 q --wait-idle --with-capture/);
+  assert.match(detail, /tide send abc123 q --wait-idle --with-read/);
   assert.equal(cli("help", "send-key").status, 1);
   assert.match(cli("send-key", "unused", "Enter").stderr, /Unknown command/);
 });
@@ -77,7 +77,7 @@ test("send rejects mixed modes and malformed sequences before contacting a sessi
     [["--key", "Up", "--key", "Enter"], /Choose one input mode/],
     [["--key", "Enter", "--with-enter"], /append Enter/],
     [["--key"], /1\.\.64 keys/],
-    [["--key", "--with-capture"], /1\.\.64 keys/],
+    [["--key", "--with-read"], /1\.\.64 keys/],
     [["--key", ...Array(65).fill("Enter")], /1\.\.64 keys/],
     [["--key", "Enter", "--with-captur"], /Unknown operation option/],
   ] as Array<[string[], RegExp]>) {
@@ -87,4 +87,16 @@ test("send rejects mixed modes and malformed sequences before contacting a sessi
     assert.match(result.stderr, message);
     assert.match(result.stderr, /Usage help: tide help send/);
   }
+});
+
+test("read replaces capture and documents region, full and line-limit behavior", () => {
+  assert.equal(cli('help', 'capture').status, 1);
+  const detail = cli('help', 'read');
+  assert.equal(detail.status, 0);
+  assert.match(detail.stdout, /--full/);
+  assert.match(detail.stdout, /Does not backfill/);
+  assert.match(detail.stdout, /whole current\/latest command region/);
+  const invalid = cli('send', 'unused', 'do-not-send', '--full');
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /--full requires --with-read/);
 });

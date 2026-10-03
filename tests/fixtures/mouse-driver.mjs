@@ -21,8 +21,8 @@ child.onData((data) => {
     if (process.argv[3] === 'public') {
       const id = readdirSync(join(process.env.TIDE_STATE_DIR, 'sessions'))[0].replace(/\.json$/, '');
       for (const direction of ['up', 'down']) {
-        const r = spawnSync(node, [resolve('dist/tide.mjs'), 'scroll', id.slice(0, 8), direction, '--steps', '1', '--x', '10', '--y', '10', '--with-capture'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
-        if (r.status !== 0 || !JSON.parse(r.stdout).capture) { console.error(r.stderr || r.stdout); child.kill(); process.exit(1); }
+        const r = spawnSync(node, [resolve('dist/tide.mjs'), 'scroll', id.slice(0, 8), direction, '--steps', '1', '--x', '10', '--y', '10', '--with-read'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+        if (r.status !== 0 || !JSON.parse(r.stdout).read) { console.error(r.stderr || r.stdout); child.kill(); process.exit(1); }
       }
       input = input.replace(/^\x1b\[<64;10;10M\x1b\[<65;10;10M/, '');
     }

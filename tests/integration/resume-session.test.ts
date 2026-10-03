@@ -40,7 +40,7 @@ test("both bundled plugins recover only interrupted tasks through real Tide sess
       const plugin = kind === "codex" ? "cxr" : "ccr";
       await request({ command: "send", text: `${quote(posix(process.execPath))} ${quote(posix(resolve("tests/fixtures/quota-cli.mjs")))} ${kind}` });
       await request({ command: "send", keys: ["Enter"] });
-      await until(() => request<Snapshot>({ command: "capture" }), (screen) => screen.text.includes("RESUME_COUNT=0"));
+      await until(() => request<Snapshot>({ command: "read" }), (screen) => screen.text.includes("RESUME_COUNT=0"));
       // Bundled plugins do not auto-watch; flip the monitor on after the CLI is up.
       await request({ command: "plugin", plugin, action: "watch", args: [] });
       await sleep(600);
@@ -56,17 +56,17 @@ test("both bundled plugins recover only interrupted tasks through real Tide sess
         assert(waiting.monitor.lastResumeAt === null);
         assert(waiting.monitor.nextProbeAt !== null);
       }
-      try { await until(() => request<Snapshot>({ command: "capture" }), (screen) => screen.text.includes("RESUME_COUNT=1")); }
+      try { await until(() => request<Snapshot>({ command: "read" }), (screen) => screen.text.includes("RESUME_COUNT=1")); }
       catch {
-        throw Error(JSON.stringify({ kind, status: await request({ command: "plugin", plugin, action: "status", args: [] }), screen: await request({ command: "capture" }) }));
+        throw Error(JSON.stringify({ kind, status: await request({ command: "plugin", plugin, action: "status", args: [] }), screen: await request({ command: "read" }) }));
       }
       await sleep(600);
-      assert((await request<Snapshot>({ command: "capture" })).text.includes("RESUME_COUNT=1"));
+      assert((await request<Snapshot>({ command: "read" })).text.includes("RESUME_COUNT=1"));
       const status = await request<{ monitor: { lastResumeAt: number; lastError: unknown } }>({ command: "plugin", plugin, action: "status", args: [] });
       assert(status.monitor.lastResumeAt > 0); assert.equal(status.monitor.lastError, null);
       await request({ command: "send", text: "/connection" });
       await request({ command: "send", keys: ["Enter"] });
-      await until(() => request<Snapshot>({ command: "capture" }), (screen) => screen.text.includes("RESUME_COUNT=2"));
+      await until(() => request<Snapshot>({ command: "read" }), (screen) => screen.text.includes("RESUME_COUNT=2"));
       await request({ command: "close" });
       await until(async () => exited, Boolean);
       await exit;

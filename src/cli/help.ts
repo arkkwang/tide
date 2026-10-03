@@ -2,14 +2,15 @@ const afterSend = `AFTER SENDING (options must follow the text/keys)
   --wait-idle       Wait for an unchanged screen after sending.
   --idle-time N     Quiet seconds, default 3 (>0..3600); requires --wait-idle.
   --timeout N       Maximum wait seconds, default 30 (0..3600); requires --wait-idle.
-  --with-capture    Include a rendered snapshot after sending and optional waiting.
-  --lines N         Capture last N available lines (1..2000); requires --with-capture.
-                    Affects capture only; waiting still observes the whole screen.
-  Both timings accept decimals. Capture alone is immediate and may precede the
+  --with-read       Read terminal content after sending and optional waiting.
+  --lines N         At most N trailing content lines (1..2000); requires --with-read.
+  --full            Disable read-history omission; requires --with-read.
+                    Affects read only; waiting still observes the whole screen.
+  Both timings accept decimals. Read alone is immediate and may precede the
   program's response. Idle is not proof of task completion or prompt readiness.
   JSON keeps {id, written} and adds wait: {id, idle, elapsedMs, idleForMs} and/or
-  capture: {id, capturedAt, cols, rows, buffer, title, text, cursor} when requested.
-  Idle timeout still captures if requested, returns idle=false and exits 3.
+  read: {id, capturedAt, cols, rows, buffer, title, text, cursor} when requested.
+  Idle timeout still reads if requested, returns idle=false and exits 3.
   If an observation fails after delivery, JSON keeps written=true and adds
   error: {stage, message}; stderr explains the error and exit code is 1. Do not
   resend automatically. Operations share the terminal with users/other agents;
@@ -36,7 +37,7 @@ const shell = `  --shell executable   Override TIDE_SHELL / SHELL / platform def
   Exiting a CLI returns to the same shell/ID; exiting the shell ends the session.`;
 
 export const commandHelp: Record<string, string> = {
-  scroll: `tide scroll <id> up|down [--steps N] [--x N] [--y N] [--wait-idle] [--idle-time N] [--timeout N] [--with-capture] [--lines N]
+  scroll: `tide scroll <id> up|down [--steps N] [--x N] [--y N] [--wait-idle] [--idle-time N] [--timeout N] [--with-read] [--lines N] [--full]
 
 Send mouse wheel events to the foreground TUI. Requires enabled SGR cell mouse
 reporting. Unsupported modes fail before sending; never substitutes arrow keys.
@@ -47,7 +48,7 @@ OPTIONS
   --steps N        Wheel steps, default 3, range 1..100; not a count of text lines.
   --x N --y N      1-based screen cell, default screen center for each coordinate.
                   Use a point inside the intended pane in multi-pane applications.
-  Occasional shell context: use capture --lines N instead of scroll.
+  Occasional shell context: use read --full --lines N instead of scroll.
   Frequent scrolling through old output suggests a different workflow: use a
   Bash/shell execution tool, redirect output to a file, then Read or grep/rg it.
   Scroll is for TUI interaction, not the recommended way to analyze long logs.
@@ -55,14 +56,14 @@ OPTIONS
 ${afterSend}
 
 OUTPUT
-  JSON {id, written: true}, plus optional wait/capture. Acknowledges wheel input,
+  JSON {id, written: true}, plus optional wait/read. Acknowledges wheel input,
   not movement: the application may already be at the beginning/end of content.
 EXAMPLE
-  tide scroll abc123 up --steps 5 --wait-idle --with-capture`,
-  resize: `tide resize <id> --cols N --rows N [--wait-idle] [--idle-time N] [--timeout N] [--with-capture] [--lines N]
+  tide scroll abc123 up --steps 5 --wait-idle --with-read`,
+  resize: `tide resize <id> --cols N --rows N [--wait-idle] [--idle-time N] [--timeout N] [--with-read] [--lines N] [--full]
 
 Request a visible terminal resize through its window-control protocol. The PTY
-and capture follow actual outer dimensions; never forces a different inner size.
+and read follow actual outer dimensions; never forces a different inner size.
 This changes the user's visible window. Later manual resizing takes precedence.
 ${session}
 
@@ -71,20 +72,20 @@ OPTIONS
   --rows N         Required rows, 5..200.
   Waits up to 3 seconds for the requested size. Terminal support, screen bounds,
   maximization and split panes may prevent an exact match. No desktop fallback.
-  --wait-idle, --idle-time N, --timeout N, --with-capture observe after resizing.
-  --lines N limits capture to N available lines (1..2000); requires --with-capture.
+  --wait-idle, --idle-time N, --timeout N, --with-read observe after resizing.
+  --lines N limits read to N available lines (1..2000); requires --with-read.
   Defaults: 3 quiet seconds, 30 seconds idle timeout. --timeout affects only idle.
-  Capture alone may show a redraw in progress. Idle does not prove task completion.
+  Read alone may show a redraw in progress. Idle does not prove task completion.
 
 OUTPUT
   JSON {id, requested: {cols, rows}, actual: {cols, rows}, applied: boolean}.
   Already at the requested size succeeds without writing a control sequence.
   Unconfirmed size: applied=false, exit 3; requested observation still runs.
-  Optional wait/capture fields match send; an observation error retains the resize
+  Optional wait/read fields match send; an observation error retains the resize
   result and adds error: {stage, message}, exit 1. A timeout is not cancellation:
   the outer terminal may apply the request later. Inspect before retrying.
 EXAMPLE
-  tide resize abc123 --cols 120 --rows 35 --wait-idle --with-capture`,
+  tide resize abc123 --cols 120 --rows 35 --wait-idle --with-read`,
   run: `tide run [--shell executable] [--cwd directory] [-- shell-args...]
 
 Host an interactive shell in the current terminal. Requires a real TTY.
@@ -98,13 +99,13 @@ OUTPUT
   node-pty's own cleanup keeps the host process alive that long. Not a hang.
 EXAMPLE
   tide run --shell bash --cwd .`,
-  launch: `tide launch [--shell executable] [--cwd directory] [--with-command text | --profile label] [--wait-idle] [--with-capture] [--lines N] [--idle-time N] [--timeout N] [-- shell-args... | -- <bin-args...>]
+  launch: `tide launch [--shell executable] [--cwd directory] [--with-command text | --profile label] [--wait-idle] [--with-read] [--lines N] [--full] [--idle-time N] [--timeout N] [-- shell-args... | -- <bin-args...>]
 
 Open a visible terminal on Windows or macOS and host an interactive shell.
 For a new session with a known command, combine launch, text, Enter and observation:
-  tide launch --with-command "echo hello" --wait-idle --with-capture
-Use the returned id for subsequent commands and inspect the returned capture;
-no separate send, Enter or capture call is needed for this startup sequence.
+  tide launch --with-command "echo hello" --wait-idle --with-read
+Use the returned id for subsequent commands and inspect the returned read;
+no separate send, Enter or read call is needed for this startup sequence.
 Windows requires Windows Terminal (wt.exe). Opens a new tab in the most
 recently used window on the current desktop (a new window when none exists),
 so launch does not steal a window of its own. Uses the current WT profile when
@@ -113,8 +114,10 @@ The hosted shell is marked with T<id> (for example T3c3375b9) in front of the
 first prompt line, without color codes, so Tide sessions are easy to tell apart
 from terminals you opened yourself. bash only, injected through PROMPT_COMMAND
 so startup files that replace PS1 keep it; the rest of the prompt is unchanged.
+A session opened inside a Tide session replaces the parent marker, so each
+prompt shows exactly one session id.
 Without --with-command / --profile, returns once the session registers; use
-wait-idle <id> --with-capture to inspect startup. Registration alone is not
+wait-idle <id> --with-read to inspect startup. Registration alone is not
 readiness. --with-command text waits for 3 quiet startup seconds (30-second
 limit), sends the single-line command, then Enter after a 150 ms pause.
 --profile label switches to a saved profile from TIDE_STATE_DIR/launch-profiles.json
@@ -130,22 +133,22 @@ sending the command. Inspect the existing session before retrying.
 Observation options require --with-command / --profile and run after Enter.
 Quote --with-command as one argument; -- <bin-args...> passes through to the
 LAST command in the profile (not the shell).
---wait-idle, --idle-time N, --timeout N, --with-capture and --lines N have the
+--wait-idle, --idle-time N, --timeout N, --with-read and --lines N have the
 same meanings as send (defaults: 3 quiet seconds, 30-second post-command limit).
-Capture without --wait-idle is immediate and may precede the command response.
+Read without --wait-idle is immediate and may precede the command response.
 ${shell}
 
 OUTPUT
   ${info}
   With --with-command / --profile, keeps session fields and adds written,
   enterWritten, profile, index, command, commands (when --profile), and
-  optional wait/capture, as for send. Failures retain the session ID and
+  optional wait/read, as for send. Failures retain the session ID and
   error: {stage, message}, exit 1. Post-command idle timeout exits 3 and still
-  captures when requested. Delivery errors may mean input arrived; inspect first.
+  reads when requested. Delivery errors may mean input arrived; inspect first.
   If launch fails or times out, inspect tide list before launching again.
 EXAMPLES
-  tide launch --with-command "echo hello" --wait-idle --with-capture
-  tide launch --cwd . --with-command "echo hello" --wait-idle --timeout 60 --with-capture
+  tide launch --with-command "echo hello" --wait-idle --with-read
+  tide launch --cwd . --with-command "echo hello" --wait-idle --timeout 60 --with-read
   tide launch --shell bash --cwd .
   tide launch --profile minimax --cwd /d/foo
   tide launch --profile minimax --cwd /d/foo -- --model claude-sonnet-4-20250514`,
@@ -176,7 +179,7 @@ tide send <id> --key <key> [keys...] [options]
 Send literal text or explicit keys to the current foreground program.
 Text is never interpreted as a key name: Enter types the word; --key Enter
 presses Return. No automatic Enter; add --with-enter to submit text.
-Inspect a fresh capture before sending; the foreground program decides what
+Inspect a fresh read before sending; the foreground program decides what
 input does. User and agent input share the terminal.
 Mixed input modes and invalid keys/options fail before any input is written.
 ${session}
@@ -199,7 +202,7 @@ KEYS (--key; case-sensitive names)
   Space-separated keys run in order, not simultaneously: --key Up Enter presses
   Up, then Enter. A + joins a chord: --key Ctrl+C. No pauses between keys.
   Send 1..64 keys; all are validated before any are written. If the next key
-  depends on a changed screen, use separate calls and inspect capture between.
+  depends on a changed screen, use separate calls and inspect read between.
   Enter Escape Tab Backspace Space
   Up Down Left Right Home End Insert Delete PageUp PageDown F1..F12
   Ctrl+A..Ctrl+Z, Ctrl+Space, Alt+letters/digits, Ctrl+Alt+letters, Shift+Tab
@@ -216,39 +219,57 @@ OUTPUT
   With --with-enter, enterWritten: true confirms the Enter write was acknowledged.
   If Enter fails, written remains true with error.stage=enter and exit 1;
   delivery may be uncertain. Inspect the screen before retrying.
-  On transport failure, capture before retrying: input may already have arrived.
+  On transport failure, read before retrying: input may already have arrived.
 EXAMPLES (Bash)
-  tide send abc123 'echo hello' --with-enter --wait-idle --with-capture
-  tide send abc123 'draft text' --with-capture
-  tide send abc123 q --wait-idle --with-capture
-  tide send abc123 --key Enter --wait-idle --timeout 60 --with-capture
+  tide send abc123 'echo hello' --with-enter --wait-idle --with-read
+  tide send abc123 'draft text' --with-read
+  tide send abc123 q --wait-idle --with-read
+  tide send abc123 --key Enter --wait-idle --timeout 60 --with-read
   tide send abc123 --key Up Enter
-  tide send abc123 --key Ctrl+C --wait-idle --with-capture
-  printf '%s' 'Explain this function' | tide send abc123 --stdin --with-enter --wait-idle --with-capture`,
-  capture: `tide capture <id> [--lines N] [--plain-text]
+  tide send abc123 --key Ctrl+C --wait-idle --with-read
+  printf '%s' 'Explain this function' | tide send abc123 --stdin --with-enter --wait-idle --with-read`,
+  read: `tide read <id> [--lines N] [--full] [--plain-text]
 
-Read a rendered terminal snapshot after parsing cursor movement and ANSI controls.
+Read terminal content without clearing or changing the user's terminal.
 ${session}
 
+BEHAVIOR
+  Integrated Bash (4.4+) marks prompt and execution boundaries. Read keeps the
+  whole current/latest command region, including unchanged progress rows and the
+  following prompt. Older already-read command regions are omitted as a prefix
+  with an explicit notice. Previously unread results are retained. No read record
+  means nothing is omitted. Repeated reads retain the latest command's result.
+  Default region reads are not limited to the window height; up to 2000 retained
+  rendered lines are available. There is no separate character-size limit.
+  Without command markers, or in an alternate-screen TUI, read returns the current
+  screen. Resize/clear invalidates region tracking until fresh command markers.
+  All reads (including --with-read, --full and --plain-text) omit trailing blank
+  rows below the last content or cursor row. Interior blanks and content spacing
+  stay intact. --lines selects the trimmed tail; default screen reads do not
+  backfill above the viewport. Internal plugin captures and idle are unchanged.
+  One reader per session: standalone and combined reads share in-memory history.
+  Internal idle/plugin captures do not consume it. After a lost response use
+  --full if needed; a server-side read may already have updated the record.
+
 OPTIONS
-  --lines N       Last N available rendered lines, 1..2000; default current screen.
-                  Includes available scrollback in the normal buffer. Full-screen
-                  alternate buffers usually have no shell scrollback.
-                  Intended for occasional context. For frequent long-output reads,
-                  use a Bash/shell execution tool with output redirected to a file,
-                  then Read selected portions or search with grep/rg.
-  --plain-text    Print text with spaces/newlines, no JSON wrapper or ANSI colors.
+  --lines N       At most N trailing lines within the selected region, 1..2000.
+                  Does not backfill from omitted history when the region is short.
+  --full          Disable history omission; select available buffer content.
+                  With --lines N, return its last N lines, including old commands.
+  --plain-text    Print text including omission notices, without the JSON wrapper.
 
 OUTPUT
-  JSON {id, capturedAt, cols, rows, buffer, title, text, cursor} by default.
-  cursor has zero-based row (relative to returned text) and col; row can be
-  negative when --lines excludes it. Older hosts may omit cursor.
-  buffer is normal or alternate. This is a screen, not a structured transcript.
-  Use the text to decide whether input, approval, recovery or more waiting is needed.
+  JSON {id, capturedAt, cols, rows, buffer, title, text, cursor}; region reads also
+  report omittedHistoryLines and limitedLines. Notices are not content lines.
+  cursor is zero-based relative to returned text (including notices); cols/rows
+  describe terminal dimensions, not the size of the returned text.
+  This is rendered terminal content, not a lossless log or a completion signal.
+  For large logs use files and Read/grep/rg, not repeated terminal reads.
 EXAMPLES
-  tide capture abc123
-  tide capture abc123 --lines 100 --plain-text`,
-  "wait-idle": `tide wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-capture] [--lines N]
+  tide read abc123
+  tide read abc123 --lines 20
+  tide read abc123 --full --lines 100 --plain-text`,
+  "wait-idle": `tide wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-read] [--lines N] [--full]
 
 Wait until the rendered screen stays unchanged for a continuous interval.
 Observation starts now, not at the last historical output. Does not send input.
@@ -261,19 +282,19 @@ OPTIONS
                        to reduce repeated waits. Returns earlier if idle is reached.
   Both accept decimal seconds. Text, dimensions and buffer changes reset the
   quiet interval; colors, titles and redraws of identical text do not.
-  --with-capture        Include a rendered snapshot after idle or timeout.
-  --lines N            Last N available lines (1..2000); requires --with-capture.
-                       Only crops capture; idle still compares the whole screen.
+  --with-read           Include a rendered snapshot after idle or timeout.
+  --lines N            Last N available lines (1..2000); requires --with-read.
+                       Only crops read; idle still compares the whole screen.
 
 OUTPUT
   JSON {id, idle, elapsedMs, idleForMs}; durations in milliseconds.
-  --with-capture adds capture (a full snapshot). Capture failure preserves the
-  wait result and adds error {stage: "capture", message}, with exit 1.
+  --with-read adds read (same behavior as tide read). Read failure preserves the
+  wait result and adds error {stage: "read", message}, with exit 1.
   Exit 0: idle=true. Exit 3: deadline reached, idle=false. Exit 1: error.
   Timeout leaves the target running. Idle does NOT prove task completion: an
-  approval prompt or a stalled task can be quiet. Inspect the captured screen.
+  approval prompt or a stalled task can be quiet. Inspect the returned screen.
 EXAMPLE
-  tide wait-idle abc123 --idle-time 3 --timeout 60 --with-capture`,
+  tide wait-idle abc123 --idle-time 3 --timeout 60 --with-read`,
   close: `tide close <id>
 
 Terminate the hosted shell and unregister its Tide session. This can end ongoing
@@ -284,7 +305,7 @@ OUTPUT
   JSON {id, closing: true} acknowledges shutdown, not completion of cleanup.
   Use list to verify removal: it drops the session at once, while on Windows the
   terminal window itself is released about 6 seconds later (see tide help run).
-  Captures are not retained after the session ends.
+  Reads are not retained after the session ends.
 EXAMPLE
   tide close abc123`,
   profiles: `tide profiles
@@ -388,8 +409,8 @@ COMMANDS
   send <id> --key <key> [keys...]  Send keys in order; + joins chords, e.g. Ctrl+C
   scroll <id> up|down [--steps N]  Send wheel events to a mouse-enabled TUI
   resize <id> --cols N --rows N    Request visible window size; report actual size
-  capture <id> [--lines N] [--plain-text]   Read the rendered terminal screen
-  wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-capture]
+  read <id> [--lines N] [--full] [--plain-text]   Read terminal content
+  wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-read]
                                                          Wait for a quiet screen
   close <id>                      Terminate the hosted shell/session
   plugin list | status <id>       List plugins, or one session's active plugins
@@ -399,46 +420,46 @@ COMMANDS
 
 AGENT WORKFLOW
   New session with a known startup command:
-  1. tide launch --with-command "echo hello" --wait-idle --with-capture
-     Starts the shell, sends the command and Enter, waits, and returns id + capture.
-     Use when shell startup needs no interaction; inspect capture before proceeding.
-  2. tide send <id> 'echo world' --with-enter --wait-idle --with-capture
-     Use the returned id and check that the captured prompt is ready for this input.
-  3. If still working: tide wait-idle <id> --timeout 300 --with-capture
-     Read the returned capture; continue waiting without resending the task.
+  1. tide launch --with-command "echo hello" --wait-idle --with-read
+     Starts the shell, sends the command and Enter, waits, and returns id + read.
+     Use when shell startup needs no interaction; inspect read before proceeding.
+  2. tide send <id> 'echo world' --with-enter --wait-idle --with-read
+     Use the returned id and check that the returned prompt is ready for this input.
+  3. If still working: tide wait-idle <id> --timeout 300 --with-read
+     Read the returned read; continue waiting without resending the task.
   4. When the whole session is no longer needed: tide close <id>
 
-  Existing session: tide list, then tide capture <id> to check its current prompt;
-  continue from step 2. Reuse a fresh returned capture instead of capturing twice.
-  If startup needs inspection: tide launch, then tide wait-idle <id> --with-capture.
-  Submit existing input or confirm a prompt: tide send <id> --key Enter --wait-idle --with-capture
-  Fill without submitting: tide send <id> 'your text' --with-capture
-  Interrupt foreground work: tide send <id> --key Ctrl+C --wait-idle --with-capture
-  Exit a pager that uses q: tide send <id> q --wait-idle --with-capture
+  Existing session: tide list, then tide read <id> to check its current prompt;
+  continue from step 2. Reuse a fresh returned read instead of capturing twice.
+  If startup needs inspection: tide launch, then tide wait-idle <id> --with-read.
+  Submit existing input or confirm a prompt: tide send <id> --key Enter --wait-idle --with-read
+  Fill without submitting: tide send <id> 'your text' --with-read
+  Interrupt foreground work: tide send <id> --key Ctrl+C --wait-idle --with-read
+  Exit a pager that uses q: tide send <id> q --wait-idle --with-read
   Text is literal; --key selects special keys. Up Enter is sequential; Ctrl+C is a chord.
   Choose input from the current prompt. User and agent input share the terminal.
   --with-command includes Enter; send requires --with-enter to submit text.
   Observation options follow send text or the --key sequence; launch options go before
   -- shell-args. Post-command waiting defaults to 3 quiet seconds, 30 seconds
   maximum; --idle-time/--timeout customize it. Every combined
-  capture accepts --lines N (1..2000) for occasional additional context.
+  read keeps command regions; --lines N limits the tail, --full includes read history.
   For expected long tasks, increase --timeout (e.g. 300, maximum 3600 seconds)
   to reduce repeated waits; reaching idle still returns early.
-  If you frequently capture long output or scroll back through history, switch to
+  If you frequently read long output or scroll back through history, switch to
   a Bash/shell execution tool or another suitable tool: redirect output to a file,
   then Read what you need or search with grep/rg. Bash: your-command > output.log 2>&1
-  Use tee when output should also remain visible. Capture/scroll support does not
+  Use tee when output should also remain visible. Read/scroll support does not
   make repeated screen reading the recommended workflow for logs or bulk output.
   Replace <id> with a real ID returned by launch or list; unique prefixes are accepted.
   Inside a hosted shell, TIDE_SESSION_ID identifies that shell. Use another ID
   from list to control a different session. All callers must share TIDE_STATE_DIR.
 
 RESULTS AND RECOVERY
-  Control commands return JSON; capture --plain-text prints only rendered text.
+  Control commands return JSON; read --plain-text prints only rendered text.
   Help is text; run is a live terminal. Exit 0 means command success, not task
   completion. Exit 1 means an error (stderr). Idle-wait timeout returns JSON and
-  exit 3, leaving the target running. Inspect the returned capture even on timeout;
-  without --with-capture, capture separately. Continue waiting without resending.
+  exit 3, leaving the target running. Inspect the returned read even on timeout;
+  without --with-read, read separately. Continue waiting without resending.
   written=true only acknowledges a PTY write. Idle is not a task/status detector.
   A failed/timeout input request may have arrived: inspect before resending.
   Ambiguous IDs require a longer prefix. Use help <command> for exact options,

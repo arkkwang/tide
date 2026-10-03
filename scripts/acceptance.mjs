@@ -23,7 +23,7 @@ try {
     mkdirSync(join(root, '.tide'), { recursive: true });
     const state = mkdtempSync(join(root, '.tide/acceptance-'));
     const work = join(state, 'work'); mkdirSync(work);
-    report = { state, work, sessions: {}, checks: [], captures: [] };
+    report = { state, work, sessions: {}, checks: [], reads: [] };
     save();
     writeFileSync(join(state, 'plugins.json'), JSON.stringify({ plugins: [join(root, 'examples/screen-plugin.mjs')] }));
     for (const name of ['claude', 'repl']) { report.sessions[name] = JSON.parse((await cli(['launch', '--cwd', work])).out).id; save(); }
@@ -50,7 +50,7 @@ try {
       const id = report.sessions[target]?.slice(0, 8);
       if (!id) throw Error('Target must be claude or repl');
       const result = await cli([action, id, ...args]);
-      if (action === 'capture') { report.captures.push({ target, at: new Date().toISOString(), output: result.out }); save(); }
+      if (action === 'read') { report.reads.push({ target, at: new Date().toISOString(), output: result.out }); save(); }
       else { (report.operations ??= []).push({ action, target, args, code: result.code, output: result.out }); save(); }
       process.stdout.write(result.out); process.exitCode = result.code;
     }

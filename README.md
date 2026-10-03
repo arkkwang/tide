@@ -12,7 +12,7 @@ npm run build
 tide() { bash /d/workspace/program/personal/tide/bin/tide "$@"; }
 
 # 新开可见标签页，执行 echo hello，等待并返回会话 ID 和画面
-tide launch --with-command "echo hello" --wait-idle --with-capture
+tide launch --with-command "echo hello" --wait-idle --with-read
 ```
 
 需要全局 `tide` 命令时，在项目目录执行 `npm run link:local`，会先构建再刷新 npm 全局入口。普通代码修改执行 `npm run build` 即可；`package.json` 的 `bin` 改动后必须重新 link，build 不会重建 npm 已生成的启动脚本。尤其从旧的 `dist/tide.mjs` 入口升级时，需要这一步才能启用 Git Bash 文本保护。`npm pack` 前自动构建，包内只包含运行入口、构建产物、示例及文档，不包含本地会话数据。
@@ -21,37 +21,39 @@ Windows 的 `launch` 通过 `wt.exe` 在当前 Windows Terminal 窗口新开一�
 
 会话内的 bash 提示符前面带 `T<短 ID>` 标记（例如 `T3c3375b9`），用于区分 Tide 托管的 shell 和自己开的终端；标记无颜色，直接接在原本 prompt 的同一行前面，不改动原 prompt 内容。标记通过 `PROMPT_COMMAND` 注入，所以不会被重写 PS1 的启动文件（如 Git Bash 的 `git-prompt.sh`）覆盖，也不需要改你的 `.bashrc`。其他 shell 没有对应的环境变量入口，保持自己的提示符。
 
-从返回的 `capture` 确认 shell 提示符就绪后，使用同一次返回的 `id` 继续操作：
+从返回的 `read` 确认 shell 提示符就绪后，使用同一次返回的 `id` 继续操作：
 
 ```bash
-tide send 5fefa 'echo world' --with-enter --wait-idle --with-capture
+tide send 5fefa 'echo world' --with-enter --wait-idle --with-read
 # 长任务仍在执行时继续等，不重复发送
-tide wait-idle 5fefa --timeout 300 --with-capture
+tide wait-idle 5fefa --timeout 300 --with-read
 # 确定不再需要整个会话时
 tide close 5fefa
 ```
 
-例子中的 `5fefa` 替换成 `launch` 或 `tide list` 返回的实际 ID 前缀。所有接收 Session ID 的命令都支持无歧义前缀，完整 ID 精确匹配优先；有多个候选就列出并拒绝执行。复用已有会话时，先 `tide list`，再 `tide capture <id>` 确认当前提示符。已拿到最新的组合操作 `capture` 时可直接据此判断下一步，无需再抓一次屏。
+例子中的 `5fefa` 替换成 `launch` 或 `tide list` 返回的实际 ID 前缀。所有接收 Session ID 的命令都支持无歧义前缀，完整 ID 精确匹配优先；有多个候选就列出并拒绝执行。复用已有会话时，先 `tide list`，再 `tide read <id>` 确认当前提示符。已拿到最新的组合操作 `read` 时可直接据此判断下一步，无需再抓一次屏。
 
-需要在当前终端托管 shell 时使用 `tide run`，再从另一个终端控制它；启动文件需要交互或必须先检查启动画面时，使用不带命令的 `tide launch`，随后 `tide wait-idle <id> --with-capture`。
+需要在当前终端托管 shell 时使用 `tide run`，再从另一个终端控制它；启动文件需要交互或必须先检查启动画面时，使用不带命令的 `tide launch`，随后 `tide wait-idle <id> --with-read`。
 
 常用路径（先确认当前画面再输入）：
 
 | 场景 | 操作 |
 | --- | --- |
-| 新开会话并启动已知命令 | `tide launch --with-command "echo hello" --wait-idle --with-capture`，自动发送 Enter |
-| 提交内容并查看响应 | `tide send <id> '内容' --with-enter --wait-idle --with-capture` |
-| 只填入内容，留给用户检查 | `tide send <id> '内容' --with-capture` |
-| 确认菜单或权限提示 | `tide send <id> --key Enter --wait-idle --with-capture`，按当前提示选择正确按键 |
-| 长任务仍在运行，继续观察 | `tide wait-idle <id> --timeout 60 --with-capture`，不重发原任务；若预期执行较长，可调大 `--timeout`（如 300 秒，上限 3600 秒），减少反复等待调用 |
-| 偶尔补看屏幕附近的输出 | `tide wait-idle <id> --with-capture --lines 100` |
-| 打断前台任务并查看结果 | `tide send <id> --key Ctrl+C --wait-idle --with-capture` |
-| 只查看当前画面 | `tide capture <id>`；需要纯文本时加 `--plain-text` |
+| 新开会话并启动已知命令 | `tide launch --with-command "echo hello" --wait-idle --with-read`，自动发送 Enter |
+| 提交内容并查看响应 | `tide send <id> '内容' --with-enter --wait-idle --with-read` |
+| 只填入内容，留给用户检查 | `tide send <id> '内容' --with-read` |
+| 确认菜单或权限提示 | `tide send <id> --key Enter --wait-idle --with-read`，按当前提示选择正确按键 |
+| 长任务仍在运行，继续观察 | `tide wait-idle <id> --timeout 60 --with-read`，不重发原任务；若预期执行较长，可调大 `--timeout`（如 300 秒，上限 3600 秒），减少反复等待调用 |
+| 偶尔补看屏幕附近的输出 | `tide wait-idle <id> --with-read --lines 100` |
+| 打断前台任务并查看结果 | `tide send <id> --key Ctrl+C --wait-idle --with-read` |
+| 只查看当前画面 | `tide read <id>`；需要纯文本时加 `--plain-text` |
 | 结束整个托管会话 | `tide close <id>` |
 
-`--with-command` 接收一个加引号的单行命令，先等待启动画面连续 3 秒不变（最多 30 秒），再发送文本并在 150 ms 后发送 Enter。搭配的 `--wait-idle`、`--idle-time`、`--timeout`、`--with-capture`、`--lines` 复用 `send` 的语义，作用于提交命令之后；所有选项放在 `-- shell-args...` 之前。画面安静不保证提示符就绪，启动文件需要交互时仍应分步检查。启动等待超时不发送命令，返回会话信息和 `error`，退出码 1；后续失败也保留会话 ID。成功返回原会话字段及 `written`、`enterWritten` 和所请求的 `wait` / `capture`。
+`read` 和组合 `--with-read` 默认省略最后内容或光标行以下的尾部空白行（包括只有空格的行），`--full`、`--plain-text` 同样适用。中间空行、非空行原有空格及光标行保留；`--lines N` 从裁剪后的有效范围取末尾 N 行，默认画面读取不会从屏幕上方历史补足行数。`cursor.row` 相对返回文本，`cols` / `rows` 仍是终端尺寸。命令区域和已读历史省略规则、内部插件 `capture()` 及 idle 检测不变。
 
-不带 `--with-command` 的 `launch` 返回的是会话已注册，随后用 `wait-idle <id> --with-capture` 检查启动画面。超时的退出码 3 不会停止目标，仍应读取返回的画面，再决定继续等、处理提示或结束任务。结束整个 shell 才使用 `close`。
+`--with-command` 接收一个加引号的单行命令，先等待启动画面连续 3 秒不变（最多 30 秒），再发送文本并在 150 ms 后发送 Enter。搭配的 `--wait-idle`、`--idle-time`、`--timeout`、`--with-read`、`--lines` 复用 `send` 的语义，作用于提交命令之后；所有选项放在 `-- shell-args...` 之前。画面安静不保证提示符就绪，启动文件需要交互时仍应分步检查。启动等待超时不发送命令，返回会话信息和 `error`，退出码 1；后续失败也保留会话 ID。成功返回原会话字段及 `written`、`enterWritten` 和所请求的 `wait` / `read`。
+
+不带 `--with-command` 的 `launch` 返回的是会话已注册，随后用 `wait-idle <id> --with-read` 检查启动画面。超时的退出码 3 不会停止目标，仍应读取返回的画面，再决定继续等、处理提示或结束任务。结束整个 shell 才使用 `close`。
 
 **频繁抓取长输出或滚屏查历史，通常意味着该换一种工具使用方式。** Tide 主要用于与可见的交互式终端协作、检查当前画面和处理输入提示。对于构建日志、测试结果、批量命令输出等，优先使用 Bash / Shell 执行工具或其他适合的工具，将输出重定向到文件，再用 Read 按需读取，或用 grep / rg 搜索。例如在 Bash 中执行 `your-command > output.log 2>&1`，再执行 `rg -n 'error|failed' output.log`。需要同时在终端查看时可用 `tee`。`--lines` 和 `scroll` 用于偶尔补看上下文或操作 TUI；支持这些能力，不代表推荐把反复抓屏、滚屏当作日志分析流程。
 
@@ -68,7 +70,7 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | 命令 | 行为 |
 | --- | --- |
 | `run [--shell executable] [--cwd directory] [-- shell-args...]` | 在现有终端托管 shell |
-| `launch [--shell executable] [--cwd directory] [--with-command text \| --profile label] [--wait-idle] [--with-capture] [-- shell-args... \| -- <bin-args...>]` | 新开可见终端（Windows 为当前窗口的新标签页），bash 提示符带 `T<短 ID>`；可自动发送命令、Enter，并等待和返回画面 |
+| `launch [--shell executable] [--cwd directory] [--with-command text \| --profile label] [--wait-idle] [--with-read] [-- shell-args... \| -- <bin-args...>]` | 新开可见终端（Windows 为当前窗口的新标签页），bash 提示符带 `T<短 ID>`；可自动发送命令、Enter，并等待和返回画面 |
 | `profiles` | 列出 `.tide/launch-profiles.json` 里的 label、描述、env key 数量 |
 | `list` | 列出本机当前托管的 shell 会话，不扫描 CLI 历史 |
 | `info <id>` | 返回 Tide ID、PID、shell、目录等进程信息 |
@@ -77,22 +79,22 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | `send <id> --key <key> [keys...]` | 顺序发送具名按键或组合键 |
 | `scroll <id> up\|down [--steps N]` | 向支持鼠标的 TUI 发送滚轮事件 |
 | `resize <id> --cols N --rows N` | 请求外层窗口调整尺寸，返回实际尺寸 |
-| `capture <id> [--lines N] [--plain-text]` | 获取解析后的终端画面 |
-| `wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-capture]` | 等待画面连续不变，或到达超时，可同时返回画面 |
+| `read <id> [--lines N] [--full] [--plain-text]` | 获取解析后的终端画面 |
+| `wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-read]` | 等待画面连续不变，或到达超时，可同时返回画面 |
 | `close <id>` | 结束该托管 shell 和会话；不是 CLI 回合打断 |
 | `plugin list` | 列出 Tide 知道的插件及启用状态，不访问会话 |
 | `plugin enable <名称\|路径>` / `plugin disable <名称\|路径>` | 改写 `.tide/plugins.json` 的插件列表，只对之后启动的会话生效 |
 | `plugin status <id>` | 查看该会话的插件匹配结果、命令和插件错误 |
 | `<plugin-id> <command> <id> [args...]` | 调用插件自己的命令，例如 `ccr status <id>`；`all` 命令可用 `--all` 顶替 id，返回每个匹配会话一条结果 |
 
-默认输出 JSON。`capture --plain-text` 只打印快照里的文本，保留空格、换行和屏幕空行，无 JSON、颜色转义或额外标题；输出区域比原窗口窄时，外层终端仍可能自动折行。
+默认输出 JSON。`read --plain-text` 只打印快照里的文本，保留空格、换行及省略提示，无 JSON 和颜色转义；输出区域比原窗口窄时，外层终端仍可能自动折行。
 
 `send` 统一发送文本和按键：默认原样文本、不回车；`--key` 明确选择按键模式。空格分隔顺序，`+` 表示组合键，不根据内容猜测模式。
 
 ```bash
 tide send 5fefa Enter       # 输入单词 Enter
 tide send 5fefa --key Enter # 按回车
-tide send 5fefa q --wait-idle --with-capture # 当前分页器用 q 退出时
+tide send 5fefa q --wait-idle --with-read # 当前分页器用 q 退出时
 ```
 
 按键示例：
@@ -111,24 +113,24 @@ tide send 5fefa --key Alt+b
 
 `written: true` 只表示输入写进 PTY，不确认 CLI 已提交、执行或完成。请求断连/超时可能已经投递，不自动重发。用户手动输入和 Agent 输入可能交错，调用方应先观察画面再操作；核心不判断当前是否处于输入框或权限弹窗。
 
-`send` 的文本和按键模式均支持在文本/按键之后追加 `--wait-idle` 和 `--with-capture`，可单独使用或组合：
+`send` 的文本和按键模式均支持在文本/按键之后追加 `--wait-idle` 和 `--with-read`，可单独使用或组合：
 
 ```bash
-tide send 5fefa '/help' --with-enter --wait-idle --with-capture
-tide send 5fefa --key Enter --wait-idle --idle-time 3 --timeout 60 --with-capture
+tide send 5fefa '/help' --with-enter --wait-idle --with-read
+tide send 5fefa --key Enter --wait-idle --idle-time 3 --timeout 60 --with-read
 ```
 
-执行顺序为发送、可选等待、可选抓屏；JSON 保留 `id`、`written`，按选项增加 `wait`（等待结果）和 `capture`（完整快照）。`--idle-time`、`--timeout` 必须与 `--wait-idle` 一起使用，默认值和独立等待命令相同。等待超时仍执行请求的抓屏，退出码为 3。只加 `--with-capture` 会立即抓屏，可能尚未看到程序响应；`send` 默认不提交，加 `--with-enter` 后先发送文本，短暂停顿后发送一次 Enter，再等待和抓屏。成功响应增加 `enterWritten: true`，仅表示回车已写入；回车失败保留 `written: true` 和 `error.stage: "enter"`，需先检查画面再决定是否重试。文本是 ID 后的第一个参数，只有 `--stdin` 和 `--key` 用于选择模式，其他内容（如 `--help`、`--wait-idle`）按原文发送。要输入字面量 `--stdin` 或 `--key`，使用管道传入 `--stdin`。`--stdin` 后同样可追加选项。
+执行顺序为发送、可选等待、可选抓屏；JSON 保留 `id`、`written`，按选项增加 `wait`（等待结果）和 `read`（终端读取结果）。`--idle-time`、`--timeout` 必须与 `--wait-idle` 一起使用，默认值和独立等待命令相同。等待超时仍执行请求的抓屏，退出码为 3。只加 `--with-read` 会立即抓屏，可能尚未看到程序响应；`send` 默认不提交，加 `--with-enter` 后先发送文本，短暂停顿后发送一次 Enter，再等待和抓屏。成功响应增加 `enterWritten: true`，仅表示回车已写入；回车失败保留 `written: true` 和 `error.stage: "enter"`，需先检查画面再决定是否重试。文本是 ID 后的第一个参数，只有 `--stdin` 和 `--key` 用于选择模式，其他内容（如 `--help`、`--wait-idle`）按原文发送。要输入字面量 `--stdin` 或 `--key`，使用管道传入 `--stdin`。`--stdin` 后同样可追加选项。
 
 发送确认后若等待或抓屏失败，仍返回 `written: true`，并附带 `error: {stage, message}`、stderr 错误和退出码 1，避免把观察失败误认为输入未送达。这些步骤不独占终端；其他人或 Agent 仍能同时输入。
 
 `wait-idle` 默认从调用时开始观察，画面连续 3 秒不变返回 `idle: true`（退出码 0），最多等待 30 秒；超时返回 `idle: false`（退出码 3）。两个参数单位为秒，支持小数，上限 3600 秒；`--idle-time` 必须大于 0，`--timeout 0` 表示立即超时。它比较解析后的屏幕文本、尺寸和缓冲区类型，忽略重复绘制相同内容、颜色码和标题变化，不读取历史空闲时间。
 
-独立等待也可组合抓屏：`tide wait-idle <id> --idle-time 3 --timeout 30 --with-capture`。空闲或超时后均抓取画面，在原有 `id`、`idle`、`elapsedMs`、`idleForMs` 字段旁增加 `capture` 完整快照；超时仍返回退出码 3。抓屏失败时保留等待结果，增加 `error: {stage: "capture", message}`，退出码为 1。
+独立等待也可组合抓屏：`tide wait-idle <id> --idle-time 3 --timeout 30 --with-read`。空闲或超时后均抓取画面，在原有 `id`、`idle`、`elapsedMs`、`idleForMs` 字段旁增加 `read` 读取结果；超时仍返回退出码 3。抓屏失败时保留等待结果，增加 `error: {stage: "read", message}`，退出码为 1。
 
-所有组合抓屏（`send`、`scroll`、`resize`、`wait-idle`）都可加 `--lines N`，与独立 `capture --lines N` 相同，范围 1..2000，须与 `--with-capture` 一起使用。它只控制返回的抓屏范围，等待仍比较整个当前画面。默认返回当前屏幕；全屏 TUI 通常没有历史滚动区。组合操作保留 JSON 中的执行结果和错误，纯文本输出使用独立 `capture --plain-text`。
+所有组合抓屏（`send`、`scroll`、`resize`、`wait-idle`）都可加 `--lines N`，与独立 `read --lines N` 相同，范围 1..2000，须与 `--with-read` 一起使用。它只控制返回的抓屏范围，等待仍比较整个当前画面。默认保留完整当前命令区域，省略已读的前序命令；加 `--full` 关闭历史省略。全屏 TUI 保持完整当前画面。组合操作保留 JSON 中的执行结果和错误，纯文本输出使用独立 `read --plain-text`。
 
-画面安静不等于任务完成或输入框已就绪；需要检查返回的 `capture` 或另行抓屏，加载中的程序也可能暂时无输出。等待不重发输入、不停止目标，调用连接断开后停止这次观察。
+画面安静不等于任务完成或输入框已就绪；需要检查返回的 `read` 或另行抓屏，加载中的程序也可能暂时无输出。等待不重发输入、不停止目标，调用连接断开后停止这次观察。
 
 ## 终端和环境
 
@@ -140,7 +142,22 @@ Windows 宿主在 raw 模式之后启用 VT 输入，让 TUI 的鼠标滚轮、�
 
 子进程继承 `TIDE_SESSION_ID`、`TIDE_STATE_DIR` 和 `TIDE_ENTRY`，可调用 Tide 访问其他会话。macOS Terminal.app 的环境通过一次性本地文件传递，宿主读取后删除。
 
-默认 capture 是当前活动屏幕，`--lines` 可多取滚动缓冲，最大 2000 行。全屏 TUI 的 alternate screen 一般没有普通 shell 的历史滚动区；这不是结构化对话日志。
+### 终端读取与历史省略
+
+公开入口由 `capture` / `--with-capture` 改为 `read` / `--with-read`，组合返回字段也改为 `read`，不保留旧入口。升级后需重开旧会话。
+
+Bash 4.4+ 通过 PS1 / PS0 的不可见 OSC 133 标记定位提示符与执行边界，不改命令、不清屏。默认返回完整当前命令区域（包括未变化的进度行），不按窗口高度截断；已读的前序命令区域可以整体省略，并明确标注。命令结束出现新提示符后仍保留刚完成的结果，直到下一条命令开始；两次读取间未读过的其他命令结果也保留。没有读取记录时不省略历史。
+
+- `read <id> --lines 20`：先选区域，再取末尾最多 20 行；区域不足 20 行不从已省略历史补足。
+- `read <id> --full`：关闭历史省略，返回缓冲区保留的内容。
+- `read <id> --full --lines 20`：从包含历史的范围取末尾最多 20 行。
+- 组合 `--with-read` 同样支持 `--full` 和 `--lines`；省略提示不计入内容行数。
+
+最多读取现有缓冲区中的 2000 个显示行，不另外限制字符数。JSON 的 `cols` / `rows` 仍表示终端尺寸，不等于返回文本尺寸；区域读取附带 `omittedHistoryLines` / `limitedLines`，`cursor.row` 相对返回文本（含提示行）。
+
+一个 Session 对应一个 Agent；读取记录保存在该 Session 内存中，独立与组合读取共用，内部 idle 检测和插件 `capture()` 不参与。响应丢失时记录可能已更新，可用 `--full` 补读。不持久化、不支持多个独立读取者。
+
+缺少标记的 shell、Bash 旧版本及 alternate-screen TUI 默认返回当前画面；`--full` 可读取保留的缓冲区。清屏或尺寸变化会重置命令区域记录，收到新的边界后恢复。启动文件若覆盖 PROMPT_COMMAND，可能导致标记失效，届时保持完整画面读取。这不是无损日志，也不表示命令已完成。
 
 CLI 退出后仍回到同一个 shell 和 Tide ID；shell 退出或 `close` 后注销会话并返回原终端，不在后台恢复。注销是立即的（`tide list` 随即不再列出），但 Windows 上宿主进程还要约 6 秒才退出、原终端窗口才恢复：这是 node-pty 的清理时间，不是卡住；宿主不用强制退出换取速度，以免丢掉退出码或依赖 node-pty 内部实现。进程树和窗口强制关闭行为仍受系统及 shell 子进程行为影响。
 
@@ -149,12 +166,12 @@ CLI 退出后仍回到同一个 shell 和 Tide ID；shell 退出或 `close` 后�
 滚动和尺寸调整示例：
 
 ```bash
-tide scroll 5fefa up --steps 5 --wait-idle --with-capture
-tide scroll 5fefa down --x 30 --y 10 --with-capture
-tide resize 5fefa --cols 120 --rows 35 --wait-idle --with-capture
+tide scroll 5fefa up --steps 5 --wait-idle --with-read
+tide scroll 5fefa down --x 30 --y 10 --with-read
+tide resize 5fefa --cols 120 --rows 35 --wait-idle --with-read
 ```
 
-`scroll` 的步数默认 3（1..100），不等于文本行数；位置是从 1 开始的屏幕列、行，默认屏幕中央。仅支持前台应用启用的 SGR 单元格鼠标协议，不支持时明确报错，不自动换成方向键。滚动改变用户和 Agent 共享的应用视图；普通 shell 历史偶尔可用 `capture --lines` 补看，频繁查阅应改用文件输出和 Read / grep / rg。
+`scroll` 的步数默认 3（1..100），不等于文本行数；位置是从 1 开始的屏幕列、行，默认屏幕中央。仅支持前台应用启用的 SGR 单元格鼠标协议，不支持时明确报错，不自动换成方向键。滚动改变用户和 Agent 共享的应用视图；普通 shell 历史偶尔可用 `read --full --lines` 补看，频繁查阅应改用文件输出和 Read / grep / rg。
 
 `resize` 要求列数 20..500、行数 5..200，最多等 3 秒确认外层实际尺寸；PTY 和屏幕副本跟随外层，不强制制造内部尺寸差异。返回 `requested`、`actual`、`applied`，未达到目标时退出码为 3，仍可等待和抓屏。终端不支持、最大化、分屏或屏幕边界可能影响结果；请求超时不代表终端不会稍后处理。用户后续手动拉窗口会继续正常同步。已验证本机 Windows Terminal，其他终端不保证支持。
 
@@ -288,7 +305,7 @@ tests/
   fixtures/                 测试用终端和 CLI
 ```
 
-后续问题记录在 [待验证问题](docs/open-questions.md)：快照 token 消耗和调用轮次，以及多个 capture 的相互影响。
+后续问题记录在 [待验证问题](docs/open-questions.md)：快照 token 消耗和调用轮次，以及多个 read 的相互影响。
 
 ```bash
 npm run typecheck

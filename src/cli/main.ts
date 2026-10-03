@@ -46,7 +46,7 @@ function expectCount(args: string[], minimum: number, maximum = minimum) {
   if (args.length < minimum || args.length > maximum) throw Error("Invalid arguments; use tide --help");
 }
 
-function captureLines(raw: string | undefined) {
+function readLines(raw: string | undefined) {
   const lines = Number(raw);
   if (!Number.isInteger(lines) || lines < 1 || lines > MAX_CAPTURE_LINES) throw Error(`--lines must be 1..${MAX_CAPTURE_LINES}`);
   return lines;
@@ -55,14 +55,15 @@ function captureLines(raw: string | undefined) {
 // `waitImplied` is for the wait-idle command, where the command name itself is
 // the wait, so --idle-time/--timeout are valid without --wait-idle.
 function afterSendOptions(args: string[], { allowEnter = false, waitImplied = false } = {}) {
-  let wait = false, capture = false, enter = false, idleTime = 3, timeout = 30, timing = false;
+  let wait = false, read = false, full = false, enter = false, idleTime = 3, timeout = 30, timing = false;
   let lines: number | undefined;
   for (let i = 0; i < args.length; i++) {
     const name = args[i];
     if (name === "--wait-idle") wait = true;
     else if (name === "--with-enter" && allowEnter) enter = true;
-    else if (name === "--with-capture") capture = true;
-    else if (name === "--lines") lines = captureLines(args[++i]);
+    else if (name === "--with-read") read = true;
+    else if (name === "--full") full = true;
+    else if (name === "--lines") lines = readLines(args[++i]);
     else if (name === "--idle-time" || name === "--timeout") {
       const raw = args[++i];
       if (!raw?.trim()) throw Error(`${name} needs seconds`);
@@ -71,15 +72,16 @@ function afterSendOptions(args: string[], { allowEnter = false, waitImplied = fa
     } else throw Error(`Unknown operation option: ${name}; use tide help <command>`);
   }
   if (timing && !wait && !waitImplied) throw Error("--idle-time and --timeout require --wait-idle");
-  if (lines !== undefined && !capture) throw Error("--lines requires --with-capture");
+  if (lines !== undefined && !read) throw Error("--lines requires --with-read");
+  if (full && !read) throw Error("--full requires --with-read");
   validateWait(idleTime, timeout);
-  return { wait: wait || waitImplied, capture, enter, idleTime, timeout, lines };
+  return { wait: wait || waitImplied, read, enter, idleTime, timeout, lines, full };
 }
 
 async function sendAndObserve(id: string, request: Extract<Request, { command: "send" | "scroll" | "resize" }>, options: ReturnType<typeof afterSendOptions>, launched?: SessionInfo) {
   const result = await requestSession<{ id: string; written?: true; applied?: boolean }>(id, request);
   if (result.applied === false) process.exitCode = 3;
-  const output: typeof result & { enterWritten?: true; wait?: IdleResult; capture?: Snapshot; error?: { stage: string; message: string } } = { ...launched, ...result };
+  const output: typeof result & { enterWritten?: true; wait?: IdleResult; read?: Snapshot; error?: { stage: string; message: string } } = { ...launched, ...result };
   let stage = "enter";
   try {
     // Pin follow-up requests to the acknowledged full ID, never re-resolve a prefix.
@@ -94,8 +96,8 @@ async function sendAndObserve(id: string, request: Extract<Request, { command: "
       output.wait = await requestSession<IdleResult>(result.id, { command: "wait-idle", idleTime: options.idleTime, timeout: options.timeout });
       if (!output.wait.idle) process.exitCode = 3;
     }
-    stage = "capture";
-    if (options.capture) output.capture = await requestSession<Snapshot>(result.id, { command: "capture", ...(options.lines === undefined ? {} : { lines: options.lines }) });
+    stage = "read";
+    if (options.read) output.read = await requestSession<Snapshot>(result.id, { command: "read", full: options.full, ...(options.lines === undefined ? {} : { lines: options.lines }) });
   } catch (error) {
     output.error = { stage, message: errorMessage(error) };
     console.error(`Operation was acknowledged; ${stage} failed. Do not resend automatically: ${output.error.message}`);
@@ -316,15 +318,16 @@ async function main() {
       }
       break;
     }
-    case "capture": {
-      let lines: number | undefined, plain = false;
+    case "read": {
+      let lines: number | undefined, plain = false, full = false;
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === "--plain-text") plain = true;
+        else if (rest[i] === "--full") full = true;
         else if (rest[i] === "--lines") {
-          lines = captureLines(rest[++i]);
-        } else throw Error(`Unknown capture option: ${rest[i]}`);
+          lines = readLines(rest[++i]);
+        } else throw Error(`Unknown read option: ${rest[i]}`);
       }
-      const snapshot = await requestSession<Snapshot>(id, { command, ...(lines === undefined ? {} : { lines }) });
+      const snapshot = await requestSession<Snapshot>(id, { command, full, ...(lines === undefined ? {} : { lines }) });
       if (plain) process.stdout.write(snapshot.text + "\n"); else print(snapshot);
       break;
     }
@@ -332,13 +335,13 @@ async function main() {
       const options = afterSendOptions(rest, { waitImplied: true });
       const result = await requestSession<IdleResult>(id, { command, idleTime: options.idleTime, timeout: options.timeout });
       if (!result.idle) process.exitCode = 3;
-      const output: IdleResult & { capture?: Snapshot; error?: { stage: string; message: string } } = { ...result };
-      if (options.capture) {
+      const output: IdleResult & { read?: Snapshot; error?: { stage: string; message: string } } = { ...result };
+      if (options.read) {
         try {
-          output.capture = await requestSession<Snapshot>(result.id, { command: "capture", ...(options.lines === undefined ? {} : { lines: options.lines }) });
+          output.read = await requestSession<Snapshot>(result.id, { command: "read", full: options.full, ...(options.lines === undefined ? {} : { lines: options.lines }) });
         } catch (error) {
-          output.error = { stage: "capture", message: errorMessage(error) };
-          console.error(`Capture after waiting failed: ${output.error.message}`);
+          output.error = { stage: "read", message: errorMessage(error) };
+          console.error(`Read after waiting failed: ${output.error.message}`);
           process.exitCode = 1;
         }
       }

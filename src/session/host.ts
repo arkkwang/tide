@@ -8,7 +8,7 @@ import { encodeKey } from "../terminal/keys.js";
 import { Registry, validateId } from "./registry.js";
 import { listen } from "./ipc.js";
 import { loadPlugins, Plugins } from "../plugins/runtime.js";
-import { shellCommand, promptEnv } from "../terminal/shell.js";
+import { shellCommand, promptEnv, commandRegionEnv } from "../terminal/shell.js";
 import { waitIdle } from "../terminal/idle.js";
 import { configureWindowsConsole } from "../terminal/windows-console.js";
 import { writeTerminalOutput } from "../terminal/output.js";
@@ -24,7 +24,7 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
   const cols = process.stdout.columns || 100, rows = process.stdout.rows || 30;
   const screen = new Screen(cols, rows);
   const child = pty.spawn(shell, args, { name: "xterm-256color", cols, rows, cwd,
-    env: { ...process.env, TERM: process.env.TERM && process.env.TERM !== "dumb" ? process.env.TERM : "xterm-256color", TIDE_SESSION_ID: id, TIDE_STATE_DIR: registry.state, TIDE_ENTRY: process.argv[1]!, ...promptEnv(shell, id) },
+    env: { ...process.env, TERM: process.env.TERM && process.env.TERM !== "dumb" ? process.env.TERM : "xterm-256color", TIDE_SESSION_ID: id, TIDE_STATE_DIR: registry.state, TIDE_ENTRY: process.argv[1]!, ...commandRegionEnv(shell, promptEnv(shell, id)) },
   });
   const socketDirectory = join(tmpdir(), `tide-${process.getuid?.() ?? "local"}`);
   if (process.platform !== "win32") mkdirSync(socketDirectory, { recursive: true, mode: 0o700 });
@@ -88,7 +88,7 @@ export async function runSession(options: ShellOptions, id: string = randomUUID(
     closeServer = await listen(record, async (request: Request, signal) => {
       switch (request.command) {
         case "info": return { ...info, ...await screen.activity() };
-        case "capture": return screen.capture(id, request.lines);
+        case "read": return screen.read(id, request.lines, request.full);
         case "wait-idle": return waitIdle(() => screen.capture(id), request.idleTime, request.timeout, signal);
         case "send": {
           if (("text" in request) === ("keys" in request)) throw Error("send requires exactly one of text or keys");

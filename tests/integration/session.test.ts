@@ -37,7 +37,7 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
   }
   async function until(id: string, predicate: (s: Snapshot) => boolean) {
     for (let i = 0; i < 80; i++) {
-      const snapshot = await requestSession<Snapshot>(id, { command: "capture" }, registry);
+      const snapshot = await requestSession<Snapshot>(id, { command: "read" }, registry);
       if (predicate(snapshot)) return snapshot;
       await sleep(100);
     }
@@ -75,7 +75,7 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     await until(short, (s) => s.text.includes("--help"));
     assert.equal((await cli(["send", short, "--key", "Ctrl+U"], true)).code, 0);
     await requestSession(short, { command: "send", text: "printf 'FORMAL_%s_OK\\n' SHELL" }, registry);
-    assert(!(await requestSession<Snapshot>(short, { command: "capture" }, registry)).text.includes("FORMAL_SHELL_OK"));
+    assert(!(await requestSession<Snapshot>(short, { command: "read" }, registry)).text.includes("FORMAL_SHELL_OK"));
     await requestSession(short, { command: "send", keys: ["Enter"] }, registry);
     await until(short, (s) => s.text.includes("FORMAL_SHELL_OK"));
     await cli(['wait-idle', short, '--idle-time', '0.2', '--timeout', '3']);
@@ -86,14 +86,14 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     const listedActivity = listed.find((s) => s.id === a.id)!;
     assert(listedActivity.idleForMs! >= activity.idleForMs);
     assert.equal(listedActivity.lastOutputAt, activity.lastOutputAt);
-    const json = await cli(["capture", short]);
-    const plain = await cli(["capture", short, "--plain-text"]);
+    const json = await cli(["read", short]);
+    const plain = await cli(["read", short, "--plain-text"]);
     assert.equal(json.code, 0); assert.equal(plain.code, 0);
     const dimensions = JSON.parse(json.out) as Snapshot;
-    const sameSize = await cli(['resize', short, '--cols', String(dimensions.cols), '--rows', String(dimensions.rows), '--with-capture']);
+    const sameSize = await cli(['resize', short, '--cols', String(dimensions.cols), '--rows', String(dimensions.rows), '--with-read']);
     assert.equal(sameSize.code, 0, sameSize.err);
     assert.equal(JSON.parse(sameSize.out).applied, true);
-    assert.equal(JSON.parse(sameSize.out).capture.cols, dimensions.cols);
+    assert.equal(JSON.parse(sameSize.out).read.cols, dimensions.cols);
     const unsupportedScroll = await cli(['scroll', short, 'up']);
     assert.equal(unsupportedScroll.code, 1);
     assert.match(unsupportedScroll.err, /SGR/);
@@ -105,68 +105,72 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     const timed = await cli(['wait-idle', short, '--idle-time', '2', '--timeout', '0']);
     assert.equal(timed.code, 3, timed.err + timed.out); assert.equal(JSON.parse(timed.out).idle, false);
     for (const timeout of ['2', '0']) {
-      const captured = await cli(['wait-idle', short, '--with-capture', '--idle-time', '0.1', '--timeout', timeout]);
+      const captured = await cli(['wait-idle', short, '--with-read', '--idle-time', '0.1', '--timeout', timeout]);
       assert.equal(captured.code, timeout === '0' ? 3 : 0, captured.err);
       const result = JSON.parse(captured.out);
       assert.equal(result.idle, timeout !== '0');
       assert.equal(result.id, a.id);
-      assert.equal(result.capture.id, a.id);
-      assert(result.capture.text.includes('FORMAL_SHELL_OK'));
+      assert.equal(result.read.id, a.id);
+      assert(result.read.text.includes('FORMAL_SHELL_OK'));
       assert.equal(typeof result.elapsedMs, 'number');
     }
     // A send remains unsubmitted; Enter then waits for actual shell output.
-    const combined = await cli(['send', short, "printf 'COMBINED_%s_OK\\n' SHELL", '--wait-idle', '--idle-time', '0.1', '--timeout', '2', '--with-capture']);
+    const combined = await cli(['send', short, "printf 'COMBINED_%s_OK\\n' SHELL", '--wait-idle', '--idle-time', '0.1', '--timeout', '2', '--with-read']);
     assert.equal(combined.code, 0, combined.err);
     assert.equal(JSON.parse(combined.out).wait.idle, true);
-    assert(!JSON.parse(combined.out).capture.text.includes('COMBINED_SHELL_OK'));
-    const submitted = await cli(['send', short, '--key', 'Enter', '--wait-idle', '--timeout', '6', '--with-capture']);
+    assert(!JSON.parse(combined.out).read.text.includes('COMBINED_SHELL_OK'));
+    const submitted = await cli(['send', short, '--key', 'Enter', '--wait-idle', '--timeout', '6', '--with-read']);
     assert.equal(submitted.code, 0, submitted.err);
-    assert(JSON.parse(submitted.out).capture.text.includes('COMBINED_SHELL_OK'), submitted.out);
+    assert(JSON.parse(submitted.out).read.text.includes('COMBINED_SHELL_OK'), submitted.out);
+    assert(!JSON.parse(submitted.out).read.text.includes('FORMAL_SHELL_OK'), submitted.out);
+    assert(JSON.parse(submitted.out).read.omittedHistoryLines > 0, submitted.out);
+    const history = await cli(['read', short, '--full']);
+    assert(JSON.parse(history.out).text.includes('FORMAL_SHELL_OK'), history.out);
     for (const piped of [false, true]) {
       const text = `printf 'ENTER_%s_OK\\n' ${piped ? 'STDIN' : 'TEXT'}`;
-      const result = await cli(['send', short, piped ? '--stdin' : text, '--with-enter', '--wait-idle', '--timeout', '6', '--with-capture'], false, piped ? text : '');
+      const result = await cli(['send', short, piped ? '--stdin' : text, '--with-enter', '--wait-idle', '--timeout', '6', '--with-read'], false, piped ? text : '');
       assert.equal(result.code, 0, result.err);
       assert.equal(JSON.parse(result.out).enterWritten, true);
-      assert(JSON.parse(result.out).capture.text.includes(`ENTER_${piped ? 'STDIN' : 'TEXT'}_OK`));
+      assert(JSON.parse(result.out).read.text.includes(`ENTER_${piped ? 'STDIN' : 'TEXT'}_OK`));
     }
-    const timeoutCapture = await cli(['send', short, '--key', 'Ctrl+U', '--wait-idle', '--timeout', '0', '--with-capture']);
+    const timeoutCapture = await cli(['send', short, '--key', 'Ctrl+U', '--wait-idle', '--timeout', '0', '--with-read']);
     assert.equal(timeoutCapture.code, 3);
     assert.equal(JSON.parse(timeoutCapture.out).wait.idle, false);
-    assert.equal(JSON.parse(timeoutCapture.out).capture.id, a.id);
-    const immediate = await cli(['send', short, '', '--with-capture']);
+    assert.equal(JSON.parse(timeoutCapture.out).read.id, a.id);
+    const immediate = await cli(['send', short, '', '--with-read']);
     assert.equal(immediate.code, 0);
-    assert.equal(JSON.parse(immediate.out).capture.id, a.id);
+    assert.equal(JSON.parse(immediate.out).read.id, a.id);
     assert.equal(JSON.parse(immediate.out).wait, undefined);
     for (const args of [
-      ['send', short, '', '--lines', '5', '--with-capture'],
-      ['send', short, '--key', 'Ctrl+U', '--with-capture', '--lines', '5'],
-      ['resize', short, '--cols', String(dimensions.cols), '--lines', '5', '--rows', String(dimensions.rows), '--with-capture'],
-      ['wait-idle', short, '--lines', '5', '--timeout', '0', '--with-capture'],
+      ['send', short, '', '--lines', '5', '--with-read'],
+      ['send', short, '--key', 'Ctrl+U', '--with-read', '--lines', '5'],
+      ['resize', short, '--cols', String(dimensions.cols), '--lines', '5', '--rows', String(dimensions.rows), '--with-read'],
+      ['wait-idle', short, '--lines', '5', '--timeout', '0', '--with-read'],
     ]) {
       const result = await cli(args);
       assert.equal(result.code, args[0] === 'wait-idle' ? 3 : 0, result.err);
-      assert.equal(JSON.parse(result.out).capture.text.split('\n').length, 5);
+      assert(JSON.parse(result.out).read.text.split('\n').filter((line: string) => !line.startsWith('[Earlier ')).length <= 5);
     }
     const [full, cropped, other] = await Promise.all([
-      cli(['capture', short]), cli(['capture', short, '--lines', '5']), cli(['capture', b.id]),
+      cli(['read', short]), cli(['read', short, '--lines', '5']), cli(['read', b.id]),
     ]);
     assert.equal(JSON.parse(full.out).id, a.id);
     assert.equal(JSON.parse(cropped.out).id, a.id);
     assert.equal(JSON.parse(other.out).id, b.id);
-    assert.equal(JSON.parse(cropped.out).text.split('\n').length, 5);
-    assert.deepEqual(JSON.parse((await cli(['capture', short])).out).text, JSON.parse(full.out).text);
-    const stdin = await cli(['send', short, '--stdin', '--wait-idle', '--idle-time', '0.1', '--with-capture'], false, '--wait-idle');
+    assert(JSON.parse(cropped.out).text.split('\n').filter((line: string) => !line.startsWith('[Earlier ')).length <= 5);
+    assert.deepEqual(JSON.parse((await cli(['read', short])).out).text, JSON.parse(full.out).text);
+    const stdin = await cli(['send', short, '--stdin', '--wait-idle', '--idle-time', '0.1', '--with-read'], false, '--wait-idle');
     assert.equal(stdin.code, 0, stdin.err);
-    assert(JSON.parse(stdin.out).capture.text.includes('--wait-idle'));
+    assert(JSON.parse(stdin.out).read.text.includes('--wait-idle'));
     await cli(['send', short, '--key', 'Ctrl+U']);
     for (const args of [
-      ['wait-idle', short, '--with-capture', '--timeout', '-1'],
+      ['wait-idle', short, '--with-read', '--timeout', '-1'],
       ['wait-idle', short, '--with-captur'],
       ['wait-idle', short, '--lines', '5'],
       ['send', short, 'NEVER_INVALID_INPUT', '--with-enter', '--lines', '5'],
-      ['send', short, 'NEVER_INVALID_INPUT', '--with-capture', '--lines', '0'],
-      ['send', short, '--key', 'Enter', '--with-capture', '--lines', '2001'],
-      ['scroll', short, 'up', '--with-capture', '--lines', '1.5'],
+      ['send', short, 'NEVER_INVALID_INPUT', '--with-read', '--lines', '0'],
+      ['send', short, '--key', 'Enter', '--with-read', '--lines', '2001'],
+      ['scroll', short, 'up', '--with-read', '--lines', '1.5'],
       ['resize', short, '--cols', '100', '--rows', '30', '--lines', '5'],
       ['send', short, 'NEVER_INVALID_INPUT', '--timeout', '1'],
       ['send', short, 'NEVER_INVALID_INPUT', '--wait-idle', '--idle-time', '-1'],
@@ -182,7 +186,7 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
       assert.equal(invalid.code, 1);
       assert.equal(invalid.out, '');
     }
-    assert(!(await requestSession<Snapshot>(short, { command: 'capture' }, registry)).text.includes('NEVER_INVALID_INPUT'));
+    assert(!(await requestSession<Snapshot>(short, { command: 'read' }, registry)).text.includes('NEVER_INVALID_INPUT'));
     const plugins = await cli(["plugin", "status", short]);
     assert.equal(JSON.parse(plugins.out)[0].id, "screen");
     const direct = await cli(["screen", "contains", short, "FORMAL_SHELL_OK"]);
@@ -239,7 +243,7 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
       const literal = await cli(['send', short, '--stdin'], false, text);
       assert.equal(literal.code, 0, literal.err);
     }
-    const beforeEnter = await requestSession<Snapshot>(short, { command: 'capture' }, registry);
+    const beforeEnter = await requestSession<Snapshot>(short, { command: 'read' }, registry);
     assert(!beforeEnter.text.includes('INPUT_PROBE_BYTES:'));
     const sequence = await cli(['send', short, '--key', 'Up', 'Enter']);
     assert.equal(sequence.code, 0, sequence.err);
@@ -254,26 +258,47 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     registry.remove(collision.id);
     assert.equal((await rpc<SessionInfo>(record, { command: "info" })).id, a.id);
     await assert.rejects(rpc({ ...record, token: "wrong" }, { command: "send", text: "never" }), /Unauthorized/);
+    // Public reads trim unused rows without changing the terminal or JSON shape.
+    const trimmed = await cli(['send', b.id, "printf '\\033[2J\\033[HREAD_TRIM\\n'", '--with-enter', '--wait-idle', '--idle-time', '0.2', '--timeout', '3', '--with-read']);
+    assert.equal(trimmed.code, 0, trimmed.err);
+    const view = JSON.parse(trimmed.out).read as Snapshot;
+    assert.match(view.text, /READ_TRIM/);
+    assert(view.text.split('\n').length < view.rows, 'unused viewport rows are omitted');
+    assert(view.text.split('\n').at(-1)!.trim().length > 0, 'the shell prompt, not blank padding, is the tail');
+    for (const options of [[], ['--full']]) {
+      const read = await cli(['read', b.id, ...options]);
+      assert.equal(read.code, 0, read.err);
+      const snapshot = JSON.parse(read.out) as Snapshot;
+      assert.equal(snapshot.text, view.text);
+      assert.deepEqual(snapshot.cursor, view.cursor);
+      assert.equal(snapshot.rows, view.rows);
+      const plain = await cli(['read', b.id, ...options, '--plain-text']);
+      assert.equal(plain.code, 0, plain.err);
+      assert.equal(plain.out, snapshot.text + '\n');
+    }
+    const limited = await cli(['read', b.id, '--lines', '1']);
+    assert.equal(limited.code, 0, limited.err);
+    assert.equal(JSON.parse(limited.out).text.split('\n').at(-1), view.text.split('\n').at(-1));
     // Observation failure must not hide an acknowledged input write.
     await cli(['send', b.id, 'sleep 0.3; exit 7']);
     // ConPTY may report shell exit after the final screen has already gone quiet.
-    const endedWhileWaiting = await cli(['send', b.id, '--key', 'Enter', '--wait-idle', '--idle-time', '10', '--timeout', '15', '--with-capture']);
+    const endedWhileWaiting = await cli(['send', b.id, '--key', 'Enter', '--wait-idle', '--idle-time', '10', '--timeout', '15', '--with-read']);
     assert.equal(endedWhileWaiting.code, 1, endedWhileWaiting.out);
     assert.equal(JSON.parse(endedWhileWaiting.out).written, true);
     // Host shutdown can race with either observation request.
-    assert(['wait-idle', 'capture'].includes(JSON.parse(endedWhileWaiting.out).error.stage));
+    assert(['wait-idle', 'read'].includes(JSON.parse(endedWhileWaiting.out).error.stage));
     assert.match(endedWhileWaiting.err, /Do not resend/);
     // A size-changing resize is exercised last. Under ConPTY, MSYS bash was once seen
     // (outside tide, not reproducible on demand) to drop the first byte of the write
     // that follows one, so nothing here sends input after this point; the cost is that
     // "input immediately after a size change" is not covered.
     // ConPTY may handle XTWINOPS itself; other outer terminals may ignore it.
-    const ignoredResize = await cli(['resize', short, '--cols', '110', '--rows', '32', '--with-capture']);
+    const ignoredResize = await cli(['resize', short, '--cols', '110', '--rows', '32', '--with-read']);
     assert([0, 3].includes(ignoredResize.code!), ignoredResize.err);
     const resized = JSON.parse(ignoredResize.out);
     assert.equal(resized.applied, resized.actual.cols === 110 && resized.actual.rows === 32);
-    assert.equal(resized.actual.cols, resized.capture.cols);
-    assert.equal(resized.actual.rows, resized.capture.rows);
+    assert.equal(resized.actual.cols, resized.read.cols);
+    assert.equal(resized.actual.rows, resized.read.rows);
     await requestSession(a.id.slice(0, 8), { command: "close" }, registry);
     t.diagnostic('close acknowledged');
     const codes: number[] = [];
@@ -301,25 +326,25 @@ test("launch submits a command and returns its rendered output in one call", { s
     encoding: "utf8", windowsHide: true, timeout: 45000, env: { ...testEnv, TIDE_STATE_DIR: state },
   });
   try {
-    const result = cli("launch", "--shell", shell!, "--cwd", process.cwd(), "--with-command", "printf 'LAUNCH_%s_OK\\n' COMBINED", "--wait-idle", "--idle-time", "0.3", "--timeout", "5", "--with-capture", "--", "--noprofile", "--norc", "-i");
+    const result = cli("launch", "--shell", shell!, "--cwd", process.cwd(), "--with-command", "printf 'LAUNCH_%s_OK\\n' COMBINED", "--wait-idle", "--idle-time", "0.3", "--timeout", "5", "--with-read", "--", "--noprofile", "--norc", "-i");
     assert.equal(result.status, 0, result.stderr);
     const launched = JSON.parse(result.stdout);
     assert.equal(launched.written, true);
     assert.equal(launched.enterWritten, true);
     assert.equal(launched.wait.idle, true);
-    assert.equal(launched.capture.id, launched.id);
+    assert.equal(launched.read.id, launched.id);
     assert.equal(typeof launched.shellPid, "number");
-    assert.match(launched.capture.text, /LAUNCH_COMBINED_OK/);
-    assert.ok(launched.capture.text.includes(`T${launched.id.slice(0, 8)}`), `prompt marker missing: ${launched.capture.text}`);
-    assert.doesNotMatch(launched.capture.text, /__git_ps1: command not found/);
-    const timed = cli("launch", "--with-command", "printf 'TIMEOUT_%s_OK\\n' LAUNCH", "--shell", shell!, "--wait-idle", "--timeout", "0", "--with-capture", "--lines", "5", "--", "--noprofile", "--norc", "-i");
+    assert.match(launched.read.text, /LAUNCH_COMBINED_OK/);
+    assert.ok(launched.read.text.includes(`T${launched.id.slice(0, 8)}`), `prompt marker missing: ${launched.read.text}`);
+    assert.doesNotMatch(launched.read.text, /__git_ps1: command not found/);
+    const timed = cli("launch", "--with-command", "printf 'TIMEOUT_%s_OK\\n' LAUNCH", "--shell", shell!, "--wait-idle", "--timeout", "0", "--with-read", "--lines", "5", "--", "--noprofile", "--norc", "-i");
     assert.equal(timed.status, 3, timed.stderr);
     const timeout = JSON.parse(timed.stdout);
     assert.equal(timeout.written, true);
     assert.equal(timeout.enterWritten, true);
     assert.equal(timeout.wait.idle, false);
-    assert.equal(timeout.capture.id, timeout.id);
-    assert.equal(timeout.capture.text.split("\n").length, 5);
+    assert.equal(timeout.read.id, timeout.id);
+    assert(timeout.read.text.split("\n").filter((line: string) => !line.startsWith('[Earlier ')).length <= 5);
     assert.equal(cli("info", timeout.id).status, 0);
   } finally {
     for (const record of registry.records()) {
