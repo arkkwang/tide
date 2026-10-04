@@ -158,9 +158,9 @@ test("plugins reuse the input channel, re-detect before writes, and stop observe
 });
 
 test("window launch uses Windows Terminal profiles without shell interpolation", () => {
-  const windows = launchCommand("win32", "C:\\Node JS\\node.exe", "D:\\a b\\tide.mjs", "abc", "D:\\a'b", "unused", { state: "D:\\private state", profile: "{profile-id}" });
+  const windows = launchCommand("win32", "C:\\Node JS\\node.exe", "D:\\a b\\tide.mjs", "abc", "D:\\a'b", "unused", { state: "D:\\private state", profile: "{profile-id}", ticket: "ticket" });
   assert.equal(windows.binary, "wt.exe");
-  assert.deepEqual(windows.args, ["-w", "0", "new-tab", "--profile", "{profile-id}", "--startingDirectory", "D:\\a'b", "C:\\Node JS\\node.exe", "D:\\a b\\tide.mjs", "__host", "abc", "D:\\private state"]);
+  assert.deepEqual(windows.args, ["-w", "0", "new-tab", "--profile", "{profile-id}", "--startingDirectory", "D:\\a'b", "C:\\Node JS\\node.exe", "D:\\a b\\tide.mjs", "__view", "abc", "D:\\private state", "ticket"]);
   const defaults = launchCommand("win32", "node", "entry", "abc", "cwd", "unused", { state: "state" });
   assert(!defaults.args.includes("--profile"));
   assert(launchCommand("win32", "node", "entry", "abc", "D:\\semi;colon", "unused", { state: "state" }).args.includes("D:\\semi\\;colon"));
@@ -221,97 +221,6 @@ test("wait-idle counts unchanged rendered content, times out on changes and canc
   } finally { screen.dispose(); }
 });
 
-test("read retains whole command blocks, skips only read history, and never consumes plugin captures", async () => {
-  const s = new Screen(60, 12);
-  const A = '\x1b]133;A\x07', C = '\x1b]133;C\x07';
-  try {
-    await s.write(`${A}$ one\r\n${C}ONE\r\n${A}$ `);
-    assert.match((await s.read('id')).text, /ONE/);
-    await s.write(`pull\r\n${C}a: 10%\r\nb: waiting\r\nc: done`);
-    const first = await s.read('id');
-    assert.doesNotMatch(first.text, /ONE/);
-    assert.match(first.text, /Earlier read history omitted/);
-    await s.write('\x1b[2A\ra: 90%\x1b[K\x1b[2B');
-    const updated = await s.read('id');
-    assert.match(updated.text, /a: 90%\nb: waiting\nc: done/);
-    await s.write(`\r\n${A}$ `);
-    assert.match((await s.read('id')).text, /b: waiting/);
-    assert.match((await s.read('id', 20)).text, /b: waiting/);
-    assert.doesNotMatch((await s.read('id', 20)).text, /ONE/);
-    assert.match((await s.read('id', 20, true)).text, /ONE/);
-    await s.write(`two\r\n${C}TWO\r\n${A}$ three\r\n${C}THREE\r\n${A}$ `);
-    await s.capture('id');
-    const unread = await s.read('id');
-    assert.match(unread.text, /TWO/);
-    assert.match(unread.text, /THREE/);
-    assert.doesNotMatch(unread.text, /b: waiting/);
-    assert.doesNotMatch((await s.read('id')).text, /TWO/);
-    assert.match((await s.read('id')).text, /THREE/);
-  } finally { s.dispose(); }
-});
-
-test("read keeps output produced after an earlier read and respects line limits without backfill", async () => {
-  const s = new Screen(60, 8);
-  const A = '\x1b]133;A\x07', C = '\x1b]133;C\x07';
-  try {
-    await s.write(`${A}$ one\r\n${C}early`);
-    await s.read('id');
-    await s.write(`\r\nlate\r\n${A}$ two\r\n${C}short\r\n${A}$ `);
-    assert.match((await s.read('id')).text, /late/);
-    const limited = await s.read('id', 20);
-    assert.doesNotMatch(limited.text, /early|late/);
-    assert.match(limited.text, /short/);
-    assert.equal(limited.text.split('\n').length, 4); // notice + command/output/prompt
-    await assert.rejects(s.read('id', 0));
-    await s.write('\x1b[?1049hmenu\r\nunchanged');
-    assert.match((await s.read('id')).text, /menu\nunchanged/);
-    await s.write('\x1b[?1049l');
-    assert.match((await s.read('id')).text, /short/);
-    s.resize(40, 8);
-    assert.equal((await s.read('id')).omittedHistoryLines, undefined);
-  } finally { s.dispose(); }
-});
-
-test("read tracks command regions across scrolling, including identical commands", async () => {
-  const s = new Screen(40, 4);
-  const A = '\x1b]133;A\x07', C = '\x1b]133;C\x07';
-  try {
-    await s.write(`${A}$ echo SAME\r\n${C}SAME\r\n${A}$ `);
-    await s.read('id');
-    await s.write(`echo SAME\r\n${C}SAME\r\n${A}$ `);
-    const result = await s.read('id');
-    assert.equal(result.text.split('\n').filter(l => l === 'SAME').length, 1);
-    assert.match(result.text, /echo SAME/);
-    assert.equal((await s.read('id', 1)).text.split('\n').at(-1), '$ ');
-  } finally { s.dispose(); }
-});
-
-test("read is not restricted to viewport height; sessions, resets and retained history stay isolated", async () => {
-  const s = new Screen(40, 4), other = new Screen(40, 4);
-  const A = '\x1b]133;A\x07', C = '\x1b]133;C\x07';
-  try {
-    await s.write(`${A}$ long\r\n${C}` + Array.from({length: 20}, (_, i) => `row-${i}\r\n`).join('') + `${A}$ `);
-    const all = await s.read('one');
-    assert.match(all.text, /row-0\n/);
-    assert.match(all.text, /row-19/);
-    assert(all.text.split('\n').length > all.rows);
-    await other.write(`${A}$ unrelated\r\n${C}OTHER\r\n${A}$ `);
-    assert.doesNotMatch((await other.read('two')).text, /omitted|row-/);
-    await s.write(`next\r\n${C}new\r\n${A}$ `);
-    assert.doesNotMatch((await s.read('one')).text, /row-0/);
-    await s.write('\x1b[2J\x1b[Hfresh');
-    assert.equal((await s.read('one')).omittedHistoryLines, undefined);
-    assert.match((await s.read('one')).text, /fresh/);
-    await s.write(`\r\n${A}$ huge\r\n${C}` + 'data\r\n'.repeat(2100));
-    const tail = await s.read('one');
-    assert(tail.text.split('\n').filter(line => !line.startsWith('[Earlier ')).length <= 2000);
-    assert.equal((await s.read('one')).text, tail.text);
-    assert.doesNotMatch(tail.text, /fresh|huge/);
-    await s.write(`${A}$ after-trim\r\n${C}AFTER\r\n${A}$ `);
-    assert.match((await s.read('one')).text, /AFTER/);
-  } finally { s.dispose(); other.dispose(); }
-});
-
 test("read trims unused bottom rows on shell, command-region and alternate-screen paths", async () => {
   const shell = new Screen(20, 6);
   try {
@@ -320,8 +229,8 @@ test("read trims unused bottom rows on shell, command-region and alternate-scree
     assert.equal(screen.text, 'one\ntwo\nthree');
     assert.equal(screen.cursor?.row, 2);
     assert.equal(screen.rows, 6, "cols/rows still report terminal size, not returned text size");
-    assert.equal((await shell.read('id', 1)).text, 'three', "line limit takes the trimmed tail, not window padding");
-    assert.equal((await shell.read('id', 2)).text, 'two\nthree');
+    assert.equal((await shell.read('id', 1)).text, '[... earlier output omitted ...]\nthree', "line limit takes the trimmed tail, not window padding");
+    assert.equal((await shell.read('id', 2)).text, '[... earlier output omitted ...]\ntwo\nthree');
     const captured = await shell.capture('id');
     assert.equal(captured.text, 'one\ntwo\nthree\n\n\n', "internal capture keeps the full window for idle detection");
     assert.equal(captured.cursor?.row, 2);
@@ -334,8 +243,7 @@ test("read trims unused bottom rows on shell, command-region and alternate-scree
     assert.equal(region.text, '$ ls\nfile');
     assert.equal(region.cursor?.row, 1);
     const tail = await integrated.read('id', 1);
-    assert.equal(tail.text, '[Earlier content outside line limit: 1 lines]\nfile');
-    assert.equal(tail.limitedLines, 1);
+    assert.equal(tail.text, '[... earlier output omitted ...]\nfile');
     assert.equal(tail.cursor?.row, 1, 'cursor includes the existing omission notice');
   } finally { integrated.dispose(); }
   const tui = new Screen(20, 5);
@@ -350,7 +258,7 @@ test("read trims unused bottom rows on shell, command-region and alternate-scree
   } finally { tui.dispose(); }
 });
 
-test("read retains blank rows up to the cursor, original spacing and --full scrollback", async () => {
+test("read retains blank rows up to the cursor, original spacing and viewport scope", async () => {
   const blank = new Screen(20, 4);
   try {
     const empty = await blank.read('id');
@@ -382,8 +290,109 @@ test("read retains blank rows up to the cursor, original spacing and --full scro
     assert.equal(current.text, 'l6\nl7\n', "default read stays inside the window and drops padding");
     assert.equal(current.cursor?.row, 2);
     const full = await scrolled.read('id', undefined, true);
-    assert.equal(full.text, 'l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\n');
-    assert.equal(full.cursor?.row, 8, "cursor row still indexes the returned text");
-    assert.equal((await scrolled.read('id', 3)).text, 'l6\nl7\n');
+    assert.equal(full.text, current.text);
+    assert.equal(full.cursor?.row, 2, "cursor row still indexes the returned text");
+    assert.equal((await scrolled.read('id', 3)).text, current.text);
   } finally { scrolled.dispose(); }
+});
+
+
+
+const A = '\x1b]133;A\x07', C = '\x1b]133;C\x07';
+
+test("reads select only the latest command, independent of earlier observations", async () => {
+  for (const observe of [false, true]) {
+    const s = new Screen(40, 70);
+    try {
+      await s.write(`${A}$ old\r\n${C}` + 'OLD\r\n'.repeat(50) + `${A}$ `);
+      if (observe) assert.match((await s.read('id')).text, /middle output omitted/);
+      await s.write(`new\r\n${C}early`);
+      assert.equal((await s.read('id')).text, '$ new\nearly');
+      await s.write('\rlater\x1b[K');
+      assert.equal((await s.read('id')).text, '$ new\nlater');
+      await s.write(`\r\n${A}$ `);
+      for (const [lines, full] of [[undefined, false], [undefined, true], [100, false]] as const) {
+        const r = await s.read('id', lines, full);
+        assert.equal(r.text, '$ new\nlater\n$ ');
+        assert.equal((await s.read('id', lines, full)).text, r.text);
+      }
+      await s.write(`unread\r\n${C}UNREAD\r\n${A}$ newest\r\n${C}NEWEST`);
+      assert.equal((await s.read('id', undefined, true)).text, '$ newest\nNEWEST');
+      await assert.rejects(s.read('id', 5, true), /mutually exclusive/);
+      for (const n of [0, 2001, 1.5]) await assert.rejects(s.read('id', n), /1..2000/);
+    } finally { s.dispose(); }
+  }
+});
+
+test("command preview boundaries, full content, tails and cursor mapping", async () => {
+  for (const count of [1, 9, 10, 30, 39, 40, 41, 60]) {
+    const s = new Screen(40, 70);
+    const rows = Array.from({ length: count }, (_, i) => `row-${i}`);
+    try {
+      await s.write(A + C + rows.join('\r\n'));
+      const r = await s.read('id');
+      const expected = count <= 40 ? rows : [...rows.slice(0, 10), '[... middle output omitted ...]', ...rows.slice(-30)];
+      assert.deepEqual(r.text.split('\n'), expected);
+      assert.equal(r.cursor?.row, expected.length - 1);
+      assert.equal((await s.read('id', undefined, true)).text, rows.join('\n'));
+      for (const n of [1, 5, 100]) {
+        const tail = await s.read('id', n);
+        assert.deepEqual(tail.text.split('\n'), count > n ? ['[... earlier output omitted ...]', ...rows.slice(-n)] : rows);
+        assert.equal(tail.cursor?.row, Math.min(count, n) - 1 + Number(count > n));
+      }
+      if (count > 40) {
+        await s.write('\x1b[1;1H');
+        assert.equal((await s.read('id')).cursor?.row, 0);
+        assert.equal((await s.read('id', 5)).cursor, undefined);
+        await s.write('\x1b[11;1H');
+        const hidden = await s.read('id');
+        assert.equal(hidden.cursor, undefined);
+        assert.match(hidden.text, /middle output omitted; cursor omitted/);
+        assert.equal((await s.read('id', undefined, true)).cursor?.row, 10);
+      }
+    } finally { s.dispose(); }
+  }
+});
+
+test("unmarked shells and TUIs keep the complete viewport, never backfill history", async () => {
+  for (const alternate of [false, true]) {
+    const s = new Screen(40, 60);
+    try {
+      const rows = Array.from({ length: 50 }, (_, i) => `row-${i}`);
+      await s.write((alternate ? '\x1b[?1049h' : '') + rows.join('\r\n'));
+      assert.equal((await s.read('id')).text, rows.join('\n'));
+      assert.equal((await s.read('id', undefined, true)).text, rows.join('\n'));
+      assert.equal((await s.read('id', 5)).text, '[... earlier output omitted ...]\n' + rows.slice(-5).join('\n'));
+      assert.equal((await s.capture('id')).text.split('\n').length, 60);
+      await s.write('\r\n' + Array.from({length: 70}, (_, i) => `extra-${i}`).join('\r\n'));
+      const viewport = (await s.capture('id')).text;
+      for (const [lines, full] of [[undefined, false], [undefined, true], [100, false]] as const)
+        assert.equal((await s.read('id', lines, full)).text, viewport);
+    } finally { s.dispose(); }
+  }
+});
+
+test("retained command output survives scrollback eviction; reset and sessions stay isolated", async () => {
+  const s = new Screen(40, 4), other = new Screen(40, 4);
+  try {
+    await s.write(`${A}$ huge\r\n${C}` + 'data\r\n'.repeat(2100));
+    assert.equal((await s.read('id')).text.split('\n').length, 41);
+    const full = await s.read('id', undefined, true);
+    assert.equal(full.text.split('\n').length, 2004);
+    assert.doesNotMatch(full.text, /huge/);
+    await other.write(`${A}$ other\r\n${C}OTHER`);
+    assert.doesNotMatch((await other.read('other')).text, /data/);
+    await s.write(`${A}$ next\r\n${C}NEXT\r\n${A}$ `);
+    assert.equal((await s.read('id')).text, '$ next\nNEXT\n$ ');
+    await s.write('\x1b[?1049h\x1b[HMENU');
+    assert.equal((await s.read('id')).text, 'MENU');
+    await s.write('\x1b[?1049l');
+    assert.match((await s.read('id')).text, /NEXT/);
+    s.resize(40, 5);
+    assert.equal((await s.read('id')).text, (await s.read('id', undefined, true)).text);
+    await s.write('\x1b[2J\x1b[Hfresh');
+    assert.equal((await s.read('id')).text, 'fresh');
+    await s.write(`\r\n${A}$ again\r\n${C}AGAIN`);
+    assert.equal((await s.read('id')).text, '$ again\nAGAIN');
+  } finally { s.dispose(); other.dispose(); }
 });

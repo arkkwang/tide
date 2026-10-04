@@ -9,6 +9,7 @@ export interface SessionInfo {
   exitCode: number | null;
   idleForMs?: number;
   lastOutputAt?: string | null;
+  display?: "detached" | "opening" | "attached";
 }
 
 export interface SessionRecord extends SessionInfo {
@@ -24,8 +25,6 @@ export interface Snapshot {
   buffer: "normal" | "alternate";
   title: string;
   text: string;
-  omittedHistoryLines?: number;
-  limitedLines?: number;
   cursor?: { row: number; col: number };
 }
 
@@ -39,6 +38,8 @@ export interface IdleResult { id: string; idle: boolean; elapsedMs: number; idle
 
 export type Request =
   | { command: "info" | "close" | "plugins" }
+  | { command: "attach-reserve" }
+  | { command: "attach-status" | "attach-cancel"; ticket: string }
   | { command: "read"; lines?: number; full?: boolean }
   | { command: "wait-idle"; idleTime: number; timeout: number }
   | ({ command: "send" } & ({ text: string; keys?: never } | { keys: string[]; text?: never }))

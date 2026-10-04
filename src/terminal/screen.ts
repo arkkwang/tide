@@ -1,17 +1,25 @@
 import xterm from "@xterm/headless";
+import serialize from "@xterm/addon-serialize";
+import { PendingVT } from "./pending-vt.js";
 import type { Snapshot } from "../session/types.js";
 import { performance } from "node:perf_hooks";
 
 export const MAX_CAPTURE_LINES = 2000;
+const DEFAULT_READ_HEAD_LINES = 10;
+const DEFAULT_READ_TAIL_LINES = 30;
 
 export const screenContent = (snapshot: Pick<Snapshot, "cols" | "rows" | "buffer" | "text">) => JSON.stringify([snapshot.cols, snapshot.rows, snapshot.buffer, snapshot.text]);
 
 export class Screen {
   private readonly terminal: xterm.Terminal;
-  // Read state belongs to this session's screen, not to idle/plugin captures.
+  private readonly serializer = new serialize.SerializeAddon();
+  private readonly pendingVT = new PendingVT();
+  private cursorVisible = true;
+  private mouseEncodings = new Set<number>();
+  private margins: Record<"normal" | "alternate", { top: number; bottom: number } | undefined> = { normal: undefined, alternate: undefined };
+  // Prompt and latest executed command boundaries; reads are stateless.
   private promptMarker: xterm.IMarker | undefined;
-  private regions: Array<{ marker: xterm.IMarker; end?: xterm.IMarker; readText?: string }> = [];
-  private historyOmitted = false;
+  private latestMarker: xterm.IMarker | undefined;
   private pending = Promise.resolve();
   private title = "";
   private content = "";
@@ -25,19 +33,21 @@ export class Screen {
   constructor(cols: number, rows: number, private readonly now = () => performance.now()) {
     this.changedAt = now();
     this.terminal = new xterm.Terminal({ cols, rows, scrollback: MAX_CAPTURE_LINES, allowProposedApi: true });
+    // The addon uses the same buffer API in headless and browser xterm.
+    this.terminal.loadAddon(this.serializer as unknown as xterm.ITerminalAddon);
+    this.terminal.parser.registerCsiHandler({ final: "r" }, (params) => {
+      const top = Number(params[0]) || 1, bottom = Number(params[1]) || this.terminal.rows;
+      if (top >= 1 && top < bottom && bottom <= this.terminal.rows) this.margins[this.terminal.buffer.active.type] = { top, bottom };
+      return false;
+    });
     this.terminal.parser.registerOscHandler(133, (data) => {
       if (this.terminal.buffer.active.type !== "normal") return false;
       if (data === "A") {
-        // Repeated prompt redraws without execution do not start a new task.
-        if (this.promptMarker && !this.regions.some((r) => r.marker === this.promptMarker || r.end === this.promptMarker)) this.promptMarker.dispose();
+        if (this.promptMarker !== this.latestMarker) this.promptMarker?.dispose();
         this.promptMarker = this.terminal.registerMarker(0);
-        const last = this.regions.at(-1);
-        if (last && !last.end && this.promptMarker) last.end = this.promptMarker;
       } else if (data === "C" && this.promptMarker && !this.promptMarker.isDisposed) {
-        if (!this.regions.some((r) => r.marker === this.promptMarker)) {
-          this.regions = this.regions.filter((r) => !r.marker.isDisposed);
-          this.regions.push({ marker: this.promptMarker });
-        }
+        if (this.latestMarker !== this.promptMarker) this.latestMarker?.dispose();
+        this.latestMarker = this.promptMarker;
       }
       return false;
     });
@@ -49,17 +59,23 @@ export class Screen {
     for (const final of ["h", "l"]) this.terminal.parser.registerCsiHandler({ prefix: "?", final }, (params) => {
       for (const param of params) {
         if (typeof param !== "number") continue;
+        if (param === 25) this.cursorVisible = final === "h";
+        if ([1005, 1006, 1015, 1016].includes(param)) {
+          if (final === "h") this.mouseEncodings.add(param); else this.mouseEncodings.delete(param);
+        }
+        if (param === 1049 && final === "h") this.margins.alternate = undefined;
         if (param === 1006) this.sgrMouseEnabled = final === "h";
         else if ([1005, 1015, 1016].includes(param)) this.otherMouseEnabled = final === "h";
       }
       return false;
     });
-    this.terminal.parser.registerEscHandler({ final: "c" }, () => { this.sgrMouseEnabled = false; this.otherMouseEnabled = false; this.resetRead(); return false; });
+    this.terminal.parser.registerEscHandler({ final: "c" }, () => { this.sgrMouseEnabled = false; this.otherMouseEnabled = false; this.cursorVisible = true; this.mouseEncodings.clear(); this.margins = { normal: undefined, alternate: undefined }; this.resetRead(); return false; });
     this.content = screenContent(this.snapshot("", rows));
   }
 
   write(data: string): Promise<void> {
     if (data.length) this.lastOutputAt = new Date().toISOString();
+    this.pendingVT.write(data);
     this.pending = new Promise((resolve) => this.terminal.write(data, () => { this.updateActivity(); resolve(); }));
     return this.pending;
   }
@@ -76,26 +92,50 @@ export class Screen {
 
   async modes() { await this.pending; return this.terminal.modes; }
 
+  onResponse(handler: (data: string) => void) { return this.terminal.onData(handler); }
+
   async scroll(direction: string, steps: number, x?: number, y?: number) {
     await this.pending;
     if (!["up", "down"].includes(direction) || !Number.isInteger(steps) || steps < 1 || steps > 100) throw Error("scroll requires up/down and --steps 1..100");
     const col = x ?? Math.ceil(this.terminal.cols / 2), row = y ?? Math.ceil(this.terminal.rows / 2);
     if (!Number.isInteger(col) || !Number.isInteger(row) || col < 1 || col > this.terminal.cols || row < 1 || row > this.terminal.rows) throw Error("Scroll coordinates must be 1-based cells inside the current screen");
-    if (["none", "x10"].includes(this.terminal.modes.mouseTrackingMode) || !this.sgrMouseEnabled || this.otherMouseEnabled) throw Error("Foreground program has not enabled supported SGR mouse scrolling; use read --full --lines for shell history or explicit send --key navigation");
+    if (["none", "x10"].includes(this.terminal.modes.mouseTrackingMode) || !this.sgrMouseEnabled || this.otherMouseEnabled) throw Error("Foreground program has not enabled supported SGR mouse scrolling; use in-app navigation or explicit send --key navigation");
     return `\x1b[<${direction === "up" ? 64 : 65};${col};${row}M`.repeat(steps);
   }
 
   private resetRead() {
-    for (const region of this.regions) { region.marker.dispose(); region.end?.dispose(); }
-    this.promptMarker?.dispose();
+    this.latestMarker?.dispose();
+    if (this.promptMarker !== this.latestMarker) this.promptMarker?.dispose();
     this.promptMarker = undefined;
-    this.regions = [];
-    this.historyOmitted = false;
+    this.latestMarker = undefined;
   }
 
   resize(cols: number, rows: number) {
-    if (cols !== this.terminal.cols || rows !== this.terminal.rows) this.resetRead();
+    if (cols !== this.terminal.cols || rows !== this.terminal.rows) {
+      this.resetRead();
+      this.margins = { normal: undefined, alternate: undefined };
+    }
     this.terminal.resize(cols, rows); this.updateActivity();
+  }
+
+  // Called at the host's serialized output boundary, never concurrently with writes.
+  async serialize(): Promise<string> {
+    await this.pending;
+    const buffer = this.terminal.buffer.active;
+    const margins = this.margins[buffer.type];
+    const origin = this.terminal.modes.originMode;
+    // Setting origin mode/margins homes the cursor. Restore them around a saved
+    // cursor (including pending wrap), rather than accepting the addon's homing.
+    let serialized = this.serializer.serialize().replaceAll("\x1b[?6h", "");
+    const normalMargins = this.margins.normal;
+    if (buffer.type === "alternate" && normalMargins) {
+      serialized = serialized.replace("\x1b[?1049h", `\x1b7\x1b[${normalMargins.top};${normalMargins.bottom}r\x1b8\x1b[?1049h`);
+    }
+    return "\x1bc" + serialized +
+      (margins || origin ? `\x1b7${margins ? `\x1b[${margins.top};${margins.bottom}r` : ""}${origin ? "\x1b[?6h" : ""}\x1b8` : "") +
+      `\x1b[?25${this.cursorVisible ? "h" : "l"}` +
+      [...this.mouseEncodings].map(mode => `\x1b[?${mode}h`).join("") +
+      `\x1b]2;${this.title.replace(/[\x00-\x1f\x7f-\x9f]/g, "")}\x07` + this.pendingVT.serialize();
   }
 
   async capture(id: string, lines = this.terminal.rows): Promise<Snapshot> {
@@ -107,65 +147,33 @@ export class Screen {
   async read(id: string, lines?: number, full = false): Promise<Snapshot> {
     if (lines !== undefined && (!Number.isInteger(lines) || lines < 1 || lines > MAX_CAPTURE_LINES)) throw Error(`--lines must be 1..${MAX_CAPTURE_LINES}`);
     if (typeof full !== "boolean") throw Error("--full must be boolean");
+    if (full && lines !== undefined) throw Error("--full and --lines are mutually exclusive");
     await this.pending;
     const buffer = this.terminal.buffer.active;
-    // Rows below the last used row are unused screen space, so every read path
-    // stops at the cursor row at the latest. A row counts as used only when it
-    // carries non-whitespace content; blank rows between content stay intact.
-    const usedEnd = (end: number) => {
-      while (end > buffer.baseY + buffer.cursorY + 1 && !buffer.getLine(end - 1)?.translateToString(true).trim()) end--;
-      return end;
-    };
-    if (buffer.type !== "normal" || !this.regions.length) {
-      // Unintegrated shells and full-screen applications keep the screen contract
-      // but drop that unused padding. A default screen read never backfills above
-      // the window to make up for the trimmed rows.
-      const end = usedEnd(Math.min(buffer.length, buffer.baseY + this.terminal.rows));
-      const start = Math.max(lines === undefined && !full ? buffer.baseY : 0, end - (lines ?? (full ? MAX_CAPTURE_LINES : this.terminal.rows)));
-      const text: string[] = [];
-      for (let row = start; row < end; row++) text.push(buffer.getLine(row)?.translateToString(true) ?? "");
-      return { id, capturedAt: new Date().toISOString(), cols: this.terminal.cols, rows: this.terminal.rows,
-        buffer: buffer.type, title: this.title, text: text.join("\n"),
-        cursor: { row: buffer.baseY + buffer.cursorY - start, col: buffer.cursorX } };
+    const cursorRow = buffer.baseY + buffer.cursorY;
+    let end = Math.min(buffer.length, buffer.baseY + this.terminal.rows);
+    while (end > cursorRow + 1 && !buffer.getLine(end - 1)?.translateToString(true).trim()) end--;
+    const tracked = buffer.type === "normal" && this.latestMarker !== undefined;
+    // A disposed command marker has scrolled out; its retained output starts at 0.
+    const start = tracked ? Math.max(0, this.latestMarker!.line) : buffer.baseY;
+    let omittedStart = start, omittedEnd = start;
+    if (lines !== undefined) omittedEnd = Math.max(start, end - lines);
+    else if (!full && tracked && end - start > DEFAULT_READ_HEAD_LINES + DEFAULT_READ_TAIL_LINES) {
+      omittedStart = start + DEFAULT_READ_HEAD_LINES;
+      omittedEnd = end - DEFAULT_READ_TAIL_LINES;
     }
-    // When a long task's start leaves scrollback, its retained tail is still
-    // the current task. Keep that last record until another command starts.
-    this.regions = this.regions.filter((r, i, all) => !r.marker.isDisposed || i === all.length - 1);
-    const end = usedEnd(Math.min(buffer.length, buffer.baseY + this.terminal.rows));
-    const regionText = (region: typeof this.regions[number]) => {
-      const stop = region.end && !region.end.isDisposed ? region.end.line : end;
-      const rows: string[] = [];
-      for (let i = Math.max(0, region.marker.line); i < stop; i++) rows.push(buffer.getLine(i)?.translateToString(true) ?? "");
-      return rows.join("\n").trimEnd();
-    };
-    let start = 0;
-    if (!full) {
-      // Keep the newest task even after completion, plus any earlier unread tasks.
-      const firstUnread = this.regions.findIndex((r) => r.readText !== regionText(r));
-      const keep = firstUnread < 0 ? this.regions.length - 1 : firstUnread;
-      if (keep > 0 || this.historyOmitted) start = Math.max(0, this.regions[keep]!.marker.line);
-    }
-    const omittedHistoryLines = start;
-    const limitedStart = Math.max(start, end - (lines ?? MAX_CAPTURE_LINES));
+    const omitted = omittedEnd - omittedStart;
+    const cursorHidden = cursorRow < start || cursorRow >= end || (cursorRow >= omittedStart && cursorRow < omittedEnd);
     const text: string[] = [];
-    for (let row = limitedStart; row < end; row++) text.push(buffer.getLine(row)?.translateToString(true) ?? "");
-    // A cropped task is not marked fully read. The latest completed task remains
-    // available until another task starts, regardless of repeated reads.
-    for (let i = 0; i < this.regions.length; i++) {
-      const region = this.regions[i]!;
-      const next = region.end && !region.end.isDisposed ? region.end.line : end;
-      if (Math.max(0, region.marker.line) >= limitedStart && next <= end) region.readText = regionText(region);
+    for (let row = start; row < end; row++) {
+      if (omitted && row === omittedStart) {
+        text.push(`[... ${lines === undefined ? "middle" : "earlier"} output omitted${cursorHidden ? "; cursor omitted" : ""} ...]`);
+        row = omittedEnd - 1;
+      } else text.push(buffer.getLine(row)?.translateToString(true) ?? "");
     }
-    // Bound bookkeeping by the terminal's retained history (disposed markers are
-    // removed above). Do not remove old markers: --full can revisit those tasks.
-    this.historyOmitted ||= omittedHistoryLines > 0;
-    const prefix = omittedHistoryLines ? `[Earlier read history omitted: ${omittedHistoryLines} lines]\n` : "";
-    const limited = limitedStart - start;
-    const notice = limited ? `[Earlier content outside line limit: ${limited} lines]\n` : "";
     return { id, capturedAt: new Date().toISOString(), cols: this.terminal.cols, rows: this.terminal.rows,
-      buffer: buffer.type, title: this.title, text: prefix + notice + text.join("\n"),
-      omittedHistoryLines, limitedLines: limited,
-      cursor: { row: buffer.baseY + buffer.cursorY - limitedStart + Number(!!prefix) + Number(!!notice), col: buffer.cursorX } };
+      buffer: buffer.type, title: this.title, text: text.join("\n"),
+      ...(!cursorHidden ? { cursor: { row: cursorRow - start - (omitted && cursorRow >= omittedEnd ? omitted - 1 : 0), col: buffer.cursorX } } : {}) };
   }
 
   private snapshot(id: string, lines: number): Snapshot {

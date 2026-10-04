@@ -79,10 +79,13 @@ export async function liveSessions(registry = new Registry()): Promise<Array<{ r
   return results.filter((entry) => entry !== null);
 }
 
-export async function requestSession<T = unknown>(prefix: string, request: Request, registry = new Registry()): Promise<T> {
+export async function sessionRecord(prefix: string, registry = new Registry()): Promise<SessionRecord> {
   const exact = registry.records().find((record) => record.id === prefix);
-  if (exact) return rpc<T>(exact, request);
+  if (exact) return exact;
   const sessions = await liveSessions(registry);
-  const selected = resolveSession(sessions.map(({ record }) => record), prefix);
-  return rpc<T>(selected, request);
+  return resolveSession(sessions.map(({ record }) => record), prefix);
+}
+
+export async function requestSession<T = unknown>(prefix: string, request: Request, registry = new Registry()): Promise<T> {
+  return rpc<T>(await sessionRecord(prefix, registry), request);
 }

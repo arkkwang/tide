@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { runSession } from "../session/host.js";
-import { launchSession, consumeLaunch } from "../session/launch.js";
+import { launchSession, consumeLaunch, attachSession } from "../session/launch.js";
+import { viewSession } from "../session/view.js";
 import { liveSessions, requestSession } from "../session/ipc.js";
 import { stateDirectory } from "../session/registry.js";
 import { errorMessage, type SessionInfo, type ShellOptions, type Snapshot, type IdleResult, type Request } from "../session/types.js";
@@ -74,6 +75,7 @@ function afterSendOptions(args: string[], { allowEnter = false, waitImplied = fa
   if (timing && !wait && !waitImplied) throw Error("--idle-time and --timeout require --wait-idle");
   if (lines !== undefined && !read) throw Error("--lines requires --with-read");
   if (full && !read) throw Error("--full requires --with-read");
+  if (full && lines !== undefined) throw Error("--full and --lines are mutually exclusive");
   validateWait(idleTime, timeout);
   return { wait: wait || waitImplied, read, enter, idleTime, timeout, lines, full };
 }
@@ -147,7 +149,7 @@ async function everySession(plugin: TidePlugin, name: string, args: string[]) {
 function pluginHelp(plugin: TidePlugin): string {
   const commands = Object.entries(plugin.commands ?? {});
   const note = commands.some(([, command]) => command.all)
-    ? "\n* Accepts --all instead of a session ID: the CLI then runs the command in\n  every session whose host reports a match, and returns a [{id, result|error}]\n  array with one entry per session."
+    ? "\n* Accepts --all: runs in each matching session; returns [{id, result|error}]."
     : "";
   return `tide ${plugin.id} <command> <session id> [args...]
 
@@ -156,28 +158,31 @@ ${plugin.name}
 COMMANDS
 ${commands.length ? commands.map(([name, command]) => `  ${(name + (command.all ? "*" : "")).padEnd(10)} ${command.description}`).join("\n") : "  (none)"}
 
-Every command runs inside the named session's host, which re-checks that this
-plugin matches it before running. Arguments after the session id go to the
-plugin unchanged; read each description for what it expects.${note}
+Use a Tide ID from tide list. Commands run in that session only if the plugin
+matches; extra arguments are passed unchanged.${note}
 `;
 }
 
 async function main() {
   const [command = "help", ...args] = process.argv.slice(2);
   if (["help", "--help", "-h"].includes(command)) { expectCount(args, 0, 1); console.log(help(args[0])); return; }
-  // Both shell paths below end by draining the event loop, never by process.exit.
-  // A forced exit right after the shell ends was observed to leave this process alive
-  // (the session is already unregistered by then; only the terminal and a stray node
-  // process give it away), and draining costs ~6.5s on Windows because node-pty's
-  // console-list helper fails and leaves a 5s ref'd timer behind. Neither is free;
-  // draining is the one that has not wedged. The delay is user-visible, so it is
-  // documented in tide help run and tide help close; keep the three in sync.
+  // Background hosts drain node-pty's cleanup naturally after unregistering.
   if (command === "__host") { if (args.length !== 1 && args.length !== 2) throw Error("Invalid terminal launch arguments"); process.exitCode = await runSession(consumeLaunch(args[0]!, args[1]), args[0]); return; }
+  if (command === "__view") { expectCount(args, 3); process.exitCode = await viewSession(args[0]!, args[1]!, args[2]!); return; }
   // Anything that is not a core command can only be a plugin namespace.
   if (!Object.hasOwn(commandHelp, command)) { await pluginCommand(command, args); return; }
   if (args.length === 1 && ["--help", "-h"].includes(args[0]!)) { console.log(help(command)); return; }
 
-  if (command === "run") { process.exitCode = await runSession(shellOptions(args)); return; }
+  if (command === "run") {
+    const options = shellOptions(args);
+    if (!process.stdin.isTTY || !process.stdout.isTTY) throw Error("tide run needs an interactive terminal; use tide launch for a background session");
+    const session = await launchSession(options);
+    console.error(`[tide] ${session.id}`);
+    const { ticket } = await requestSession<{ ticket: string }>(session.id, { command: "attach-reserve" });
+    try { process.exitCode = await viewSession(session.id, stateDirectory(), ticket); }
+    finally { await requestSession(session.id, { command: "attach-cancel", ticket }).catch(() => {}); }
+    return;
+  }
   if (command === "launch") {
     const shellArgs: string[] = [], observation: string[] = [];
     let text: string | undefined;
@@ -327,6 +332,7 @@ async function main() {
           lines = readLines(rest[++i]);
         } else throw Error(`Unknown read option: ${rest[i]}`);
       }
+      if (full && lines !== undefined) throw Error("--full and --lines are mutually exclusive");
       const snapshot = await requestSession<Snapshot>(id, { command, full, ...(lines === undefined ? {} : { lines }) });
       if (plain) process.stdout.write(snapshot.text + "\n"); else print(snapshot);
       break;
@@ -348,6 +354,7 @@ async function main() {
       print(output);
       break;
     }
+    case "attach": expectCount(rest, 0); print(await attachSession(id)); break;
     case "info": case "close": expectCount(rest, 0); print(await requestSession(id, { command })); break;
     default: throw Error(`Unknown command: ${command}; use tide --help`);
   }

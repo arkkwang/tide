@@ -123,9 +123,10 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     assert.equal(submitted.code, 0, submitted.err);
     assert(JSON.parse(submitted.out).read.text.includes('COMBINED_SHELL_OK'), submitted.out);
     assert(!JSON.parse(submitted.out).read.text.includes('FORMAL_SHELL_OK'), submitted.out);
-    assert(JSON.parse(submitted.out).read.omittedHistoryLines > 0, submitted.out);
+
     const history = await cli(['read', short, '--full']);
-    assert(JSON.parse(history.out).text.includes('FORMAL_SHELL_OK'), history.out);
+    assert(!JSON.parse(history.out).text.includes('FORMAL_SHELL_OK'), history.out);
+    assert(JSON.parse(history.out).text.includes('COMBINED_SHELL_OK'), history.out);
     for (const piped of [false, true]) {
       const text = `printf 'ENTER_%s_OK\\n' ${piped ? 'STDIN' : 'TEXT'}`;
       const result = await cli(['send', short, piped ? '--stdin' : text, '--with-enter', '--wait-idle', '--timeout', '6', '--with-read'], false, piped ? text : '');
@@ -279,6 +280,25 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     const limited = await cli(['read', b.id, '--lines', '1']);
     assert.equal(limited.code, 0, limited.err);
     assert.equal(JSON.parse(limited.out).text.split('\n').at(-1), view.text.split('\n').at(-1));
+    // Combined and standalone public reads share the head/tail preview.
+    const longOutput = await cli(['send', b.id, "printf 'READ_PREVIEW_%s\\n' {0..79}", '--with-enter', '--wait-idle', '--idle-time', '0.2', '--timeout', '3', '--with-read']);
+    assert.equal(longOutput.code, 0, longOutput.err);
+    const preview = JSON.parse(longOutput.out).read as Snapshot;
+    const previewRows = preview.text.split('\n');
+    assert.equal(previewRows.length, 41);
+    assert.equal(previewRows[10], '[... middle output omitted ...]');
+
+    assert.match(preview.text, /READ_PREVIEW_0\n/);
+    assert.match(preview.text, /READ_PREVIEW_79/);
+    assert.equal(JSON.parse((await cli(['read', b.id])).out).text, preview.text);
+    assert.equal((await cli(['read', b.id, '--plain-text'])).out, preview.text + '\n');
+    const complete = JSON.parse((await cli(['read', b.id, '--full'])).out) as Snapshot;
+    assert.match(complete.text, /READ_PREVIEW_40/);
+    assert.doesNotMatch(complete.text, /output omitted/);
+    const nextFull = await cli(['send', b.id, "printf 'LATEST_%s\\n' DONE", '--with-enter', '--wait-idle', '--idle-time', '0.2', '--timeout', '3', '--with-read', '--full']);
+    assert.equal(nextFull.code, 0, nextFull.err);
+    assert.equal(JSON.parse(nextFull.out).read.text, JSON.parse((await cli(['read', b.id, '--full'])).out).text);
+    assert.doesNotMatch(JSON.parse(nextFull.out).read.text, /READ_PREVIEW/);
     // Observation failure must not hide an acknowledged input write.
     await cli(['send', b.id, 'sleep 0.3; exit 7']);
     // ConPTY may report shell exit after the final screen has already gone quiet.

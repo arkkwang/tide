@@ -340,16 +340,16 @@ export function resumePlugin(id: string, name: string, kind: CliKind, probe: Pro
     },
     commands: {
       status: {
-        description: "Read-only: capture screen + decide + read monitor state. Returns observation {matched, ready, interruption, fingerprint}, decision {kind, remainingMs?, phase?}, monitor {enabled, phase, interruption, stableSince, nextProbeAt, lastProbe, lastError, lastResumeAt}. No probe, no send. Epoch ms fields can be formatted with the exported formatDuration helper.",
+        description: "Read-only observation, decision and monitor state; no probe or input. Fields: docs/resume-plugins.md.",
         all: true,
         run: run("status", (value) => value.status()),
       },
       watch: {
-        description: "Start automatic recovery for this session. The monitor is off by default; call this after the foreground CLI is ready. Schedules an immediate observe. Returns monitor state.",
+        description: "Enable recovery after the CLI is ready (default off). Can send input; probes consume tokens. Returns monitor state.",
         run: run("watch", (value) => value.setEnabled(true)),
       },
       unwatch: {
-        description: "Stop automatic recovery for this session; cancels any in-flight probe. The plugin stays loaded; `watch` resumes it. Returns monitor state.",
+        description: "Stop recovery and cancel any probe; returns monitor state. Use watch to resume.",
         run: run("unwatch", (value) => value.setEnabled(false)),
       },
     },

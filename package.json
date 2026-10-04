@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "npm run build && node --import tsx --test tests/unit/terminal.test.ts tests/integration/session.test.ts tests/unit/help.test.ts tests/unit/resume.test.ts tests/unit/profile-config.test.ts tests/unit/plugin-config.test.ts tests/integration/resume-session.test.ts tests/integration/windows-input.test.ts",
+    "test": "npm run build && node --import tsx --test tests/unit/terminal.test.ts tests/unit/display.test.ts tests/integration/attach.test.ts tests/integration/session.test.ts tests/unit/help.test.ts tests/unit/resume.test.ts tests/unit/profile-config.test.ts tests/unit/plugin-config.test.ts tests/integration/resume-session.test.ts tests/integration/windows-input.test.ts",
     "build": "node scripts/build.mjs",
     "link:local": "npm run build && npm link --ignore-scripts --offline --no-audit --no-fund",
     "prepack": "npm run build",
@@ -18,8 +18,15 @@
   "bin": {
     "tide": "bin/tide"
   },
-  "files": ["bin/", "dist/", "examples/", "docs/", "README.md"],
+  "files": [
+    "bin/",
+    "dist/",
+    "examples/",
+    "docs/",
+    "README.md"
+  ],
   "dependencies": {
+    "@xterm/addon-serialize": "0.13.0",
     "@xterm/headless": "5.5.0",
     "node-pty": "1.1.0"
   },
