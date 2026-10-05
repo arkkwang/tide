@@ -15,12 +15,18 @@ const shellOptions = `  --shell executable  Override TIDE_SHELL / SHELL / platfo
 // One definition supplies both the overview and each command's local expansion.
 const commands: Record<string, { usage: string[]; summary: string; details?: string }> = {
   launch: {
-    usage: ['launch [--shell executable] [--cwd directory] [--with-command text | --profile label]'],
-    summary: 'Start a background shell session without opening a window; return its Tide ID.',
+    usage: ['launch [--shell executable] [--cwd directory] [--with-command text | --profile label] [--attach]'],
+    summary: 'Start a background shell session (no window unless --attach); return its Tide ID.',
     details: `${shellOptions}
   --with-command text  Send a single-line command followed by Enter.
   --profile label      Run a saved profile; exclusive with --with-command.
   -- args...           Shell arguments, or arguments for the profile's last command.
+  --attach             Open a terminal display for this new session. Windows/macOS
+                       only, and not the current terminal (no focus guarantee): Windows Terminal
+                       tab / macOS Terminal window. Attach happens after command submission,
+                       before --wait-idle/--with-read. Closing the display leaves the session running.
+                       Attach failure skips observation and does not close the session; retry
+                       tide attach <id>. Put --attach before the -- argument delimiter.
   Command/profile startup waits for 3 quiet seconds (30-second limit).
   Startup timeout sends nothing; later failures may have delivered input.
   Observation options require --with-command or --profile:
@@ -136,6 +142,7 @@ ${Object.values(commands).map(command => command.usage.map(usage => `  ${usage}`
 
   launch/send/scroll/resize also accept --wait-idle [--idle-time N] [--timeout N]
   and --with-read [--full | --lines N]. Launch requires --with-command/--profile.
+  launch --attach opens a terminal display for the new session (Windows/macOS).
   wait-idle --with-read also accepts --full | --lines N.
 
 Text does not auto-submit; use --with-enter.

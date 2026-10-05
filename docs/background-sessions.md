@@ -2,7 +2,7 @@
 
 ## 使用契约
 
-- `launch`：后台创建 PTY/shell，返回 Session ID，不打开终端窗口。
+- `launch`：后台创建 PTY/shell，返回 Session ID，默认不打开终端窗口。加 `--attach` 时为刚创建的会话打开显示端（与 `attach` 相同：Windows Terminal Tab / macOS Terminal 窗口，不是当前终端，不保证前台焦点）。
 - `attach <id>`：Windows 打开 WT Tab，macOS 打开 Terminal 显示端，接入同一会话；不重启程序。
 - `run`：创建后台会话，并把当前真实终端作为显示端。
 - `send/read/wait-idle`：不依赖显示端，不操作桌面焦点。
@@ -32,6 +32,7 @@ Agent CLI ──请求/响应 IPC── 后台宿主（PTY、Screen、插件、�
 - 启动参数通过一次性私有文件交接，环境直接继承；不再为窗口启动保存整份环境。
 - 宿主诊断写入 `TIDE_STATE_DIR/session-logs/<id>.log`，不包含常规 PTY 输出。
 - 启动超时可能表示宿主仍在启动，错误中提供会话 ID 和诊断路径。
+- `launch --attach` 的 attach 失败返回 `error.stage: "attach"` 并退出码 1：不自动关闭会话，已发送的输入不会重发，跳过后续等待/抓屏，用 `tide attach <id>` 重试；attach 成功后的等待超时仍是退出码 3，结果里保留 `attached: true`。
 - `resize` 在无显示端时直接调整 PTY；已连接时请求可见窗口调整，返回实际结果。
 - 宿主退出时发送最终输出及退出码、注销会话；后台 node-pty 清理可能稍后完成。
 - 不提供跨宿主崩溃恢复、历史持久化、多显示端、Tab 搜索或强制接管。

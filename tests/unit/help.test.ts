@@ -46,6 +46,9 @@ test("launch validates combined options before opening a terminal", () => {
     [["launch", "--with-command", "echo ok\nexit"], /single line/],
     [["launch", "--with-command", "echo ok", "--lines", "5"], /requires --with-read/],
     [["launch", "--with-command", "echo ok", "--timeout", "1"], /require --wait-idle/],
+    [["launch", "--attach", "--attach"], /only be supplied once/],
+    [["launch", "--attach", "--with-command", "echo ok", "--lines", "5"], /requires --with-read/],
+    [["launch", "--attach", "--with-command", "echo ok", "--timeout", "1"], /require --wait-idle/],
     [["launch", "--with-command", "echo ok", "--with-read", "--lines", "0"], /1..2000/],
     [["launch", "--with-command", "echo ok", "--with-enter"], /Unknown operation option/],
     [["launch", "--with-read"], /require --with-command/],
@@ -135,6 +138,15 @@ test("full and lines conflict before session access or side effects", () => {
       assert.match(result.stderr, /--full and --lines are mutually exclusive/);
     }
   }
+});
+
+test("launch help documents --attach placement and platform scope", () => {
+  assert.match(commandHelp.launch!, /--attach/);
+  assert.match(commandHelp.launch!, /Windows\/macOS/);
+  assert.match(commandHelp.launch!, /before --wait-idle\/--with-read/);
+  const overview = cli().stdout;
+  assert.match(overview, /launch --attach opens a terminal display/);
+  assert.match(overview, /Windows\/macOS/);
 });
 
 test("local help keeps parameter contracts rather than workflow instructions", () => {

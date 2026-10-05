@@ -1,18 +1,16 @@
 import { readFileSync } from "node:fs";
-import { setTimeout as sleep } from "node:timers/promises";
 import { runSession } from "../session/host.js";
 import { launchSession, consumeLaunch, attachSession } from "../session/launch.js";
 import { viewSession } from "../session/view.js";
 import { liveSessions, requestSession } from "../session/ipc.js";
 import { stateDirectory } from "../session/registry.js";
-import { errorMessage, type SessionInfo, type ShellOptions, type Snapshot, type IdleResult, type Request } from "../session/types.js";
-import { validateWait } from "../terminal/idle.js";
-import { MAX_CAPTURE_LINES } from "../terminal/screen.js";
+import { errorMessage, type SessionInfo, type ShellOptions, type Snapshot, type IdleResult } from "../session/types.js";
 import { validateSize } from "../terminal/resize.js";
 import { buildLaunchShellCommand, findProfile, loadProfiles, type ProfileEntry } from "../profile-config/index.js";
 import { loadPlugins, pluginList, setPluginEnabled, type TidePlugin } from "../plugins/runtime.js";
 
 import { commandHelp, help } from "./help.js";
+import { afterSendOptions, sendAndObserve, attachOnce, readLines, assertAttachSupported } from "./workflow.js";
 
 function shellOptions(args: string[]): ShellOptions {
   const options: ShellOptions = {};
@@ -45,67 +43,6 @@ function augmentedSession(info: SessionInfo, profile: ProfileEntry): AugmentedSe
 
 function expectCount(args: string[], minimum: number, maximum = minimum) {
   if (args.length < minimum || args.length > maximum) throw Error("Invalid arguments; use tide --help");
-}
-
-function readLines(raw: string | undefined) {
-  const lines = Number(raw);
-  if (!Number.isInteger(lines) || lines < 1 || lines > MAX_CAPTURE_LINES) throw Error(`--lines must be 1..${MAX_CAPTURE_LINES}`);
-  return lines;
-}
-
-// `waitImplied` is for the wait-idle command, where the command name itself is
-// the wait, so --idle-time/--timeout are valid without --wait-idle.
-function afterSendOptions(args: string[], { allowEnter = false, waitImplied = false } = {}) {
-  let wait = false, read = false, full = false, enter = false, idleTime = 3, timeout = 30, timing = false;
-  let lines: number | undefined;
-  for (let i = 0; i < args.length; i++) {
-    const name = args[i];
-    if (name === "--wait-idle") wait = true;
-    else if (name === "--with-enter" && allowEnter) enter = true;
-    else if (name === "--with-read") read = true;
-    else if (name === "--full") full = true;
-    else if (name === "--lines") lines = readLines(args[++i]);
-    else if (name === "--idle-time" || name === "--timeout") {
-      const raw = args[++i];
-      if (!raw?.trim()) throw Error(`${name} needs seconds`);
-      if (name === "--idle-time") idleTime = Number(raw); else timeout = Number(raw);
-      timing = true;
-    } else throw Error(`Unknown operation option: ${name}; use tide help <command>`);
-  }
-  if (timing && !wait && !waitImplied) throw Error("--idle-time and --timeout require --wait-idle");
-  if (lines !== undefined && !read) throw Error("--lines requires --with-read");
-  if (full && !read) throw Error("--full requires --with-read");
-  if (full && lines !== undefined) throw Error("--full and --lines are mutually exclusive");
-  validateWait(idleTime, timeout);
-  return { wait: wait || waitImplied, read, enter, idleTime, timeout, lines, full };
-}
-
-async function sendAndObserve(id: string, request: Extract<Request, { command: "send" | "scroll" | "resize" }>, options: ReturnType<typeof afterSendOptions>, launched?: SessionInfo) {
-  const result = await requestSession<{ id: string; written?: true; applied?: boolean }>(id, request);
-  if (result.applied === false) process.exitCode = 3;
-  const output: typeof result & { enterWritten?: true; wait?: IdleResult; read?: Snapshot; error?: { stage: string; message: string } } = { ...launched, ...result };
-  let stage = "enter";
-  try {
-    // Pin follow-up requests to the acknowledged full ID, never re-resolve a prefix.
-    if (options.enter) {
-      // Let the foreground TUI process pasted text before submitting it.
-      await sleep(150);
-      await requestSession(result.id, { command: "send", keys: ["Enter"] });
-      output.enterWritten = true;
-    }
-    stage = "wait-idle";
-    if (options.wait) {
-      output.wait = await requestSession<IdleResult>(result.id, { command: "wait-idle", idleTime: options.idleTime, timeout: options.timeout });
-      if (!output.wait.idle) process.exitCode = 3;
-    }
-    stage = "read";
-    if (options.read) output.read = await requestSession<Snapshot>(result.id, { command: "read", full: options.full, ...(options.lines === undefined ? {} : { lines: options.lines }) });
-  } catch (error) {
-    output.error = { stage, message: errorMessage(error) };
-    console.error(`Operation was acknowledged; ${stage} failed. Do not resend automatically: ${output.error.message}`);
-    process.exitCode = 1;
-  }
-  print(output);
 }
 
 // `tide <plugin id> <command> <session id> [args...]`. The plugin id is its own
@@ -188,6 +125,7 @@ async function main() {
     let text: string | undefined;
     let profile: ProfileEntry | undefined;
     let binArgs: string[] = [];
+    let attach = false;
     const profileCache = (process.env.TIDE_LAUNCH_PROFILES || args.some((arg) => arg === "--profile"))
       ? loadProfiles(stateDirectory())
       : { path: "", profiles: [] };
@@ -213,6 +151,9 @@ async function main() {
           const list = profileCache.profiles.map((p) => `  ${p.index}. ${p.label}${p.description ? ` — ${p.description}` : ""}`).join("\n");
           throw Error(`Unknown profile: ${label}\nLoaded from ${profileCache.path}\nAvailable:\n${list}`);
         }
+      } else if (arg === "--attach") {
+        if (attach) throw Error("--attach may only be supplied once");
+        attach = true;
       } else if (arg === "--shell" || arg === "--cwd") {
         shellArgs.push(arg);
         if (args[i + 1] !== undefined) shellArgs.push(args[++i]!);
@@ -229,15 +170,23 @@ async function main() {
     }
     if (text === undefined && observation.length) throw Error("Launch observation options require --with-command or --profile");
     if (text !== undefined && /[\x00-\x1f\x7f-\x9f]/.test(text)) throw Error("--with-command requires a single line without control characters");
+    // Reject unsupported platforms before creating the session.
+    if (attach) assertAttachSupported();
     const launched = await launchSession(shell);
-    if (text === undefined) { print(launched); return; }
+    if (text === undefined) {
+      if (!attach) { print(launched); return; }
+      const attached = await attachOnce(launched);
+      print(attached);
+      if ("error" in attached) { console.error(`Attach failed; session ${launched.id} was not closed; retry with: tide attach ${launched.id}: ${attached.error.message}`); process.exitCode = 1; }
+      return;
+    }
     const launchedForPrint = profile ? augmentedSession(launched, profile) : launched;
     let stage = "startup";
     try {
       const startup = await requestSession<IdleResult>(launched.id, { command: "wait-idle", idleTime: 3, timeout: 30 });
       if (!startup.idle) throw Error("Startup screen did not settle within 30 seconds; command was not sent");
       stage = "send";
-      await sendAndObserve(launched.id, { command: "send", text }, { ...options, enter: true }, launchedForPrint);
+      await sendAndObserve(launched.id, { command: "send", text }, { ...options, enter: true, attach }, launchedForPrint);
     } catch (error) {
       print({ ...launchedForPrint, error: { stage, message: errorMessage(error) } });
       console.error("Session was launched; " + stage + " failed. Inspect this session before retrying: " + errorMessage(error));

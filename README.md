@@ -17,7 +17,7 @@ tide launch --with-command "echo hello" --wait-idle --with-read
 
 需要全局 `tide` 命令时，在项目目录执行 `npm run link:local`，会先构建再刷新 npm 全局入口。普通代码修改执行 `npm run build` 即可；`package.json` 的 `bin` 改动后必须重新 link，build 不会重建 npm 已生成的启动脚本。尤其从旧的 `dist/tide.mjs` 入口升级时，需要这一步才能启用 Git Bash 文本保护。`npm pack` 前自动构建，包内只包含运行入口、构建产物、示例及文档，不包含本地会话数据。
 
-`launch` 不创建窗口、不请求输入焦点。`tide attach <id>` 自动打开 Windows Terminal Tab（Windows）或 Terminal 窗口（macOS），接入原来的 shell 和正在执行的程序，不重新执行命令。Windows 使用 `wt -w 0`，在当前虚拟桌面最近使用的窗口新建 Tab；没有窗口时新建窗口。沿用调用端的 `WT_PROFILE_ID`，否则使用用户默认配置。`attach` 返回表示显示端已连接，不保证操作系统已授予前台焦点。
+默认 `launch` 不创建窗口、不请求输入焦点；`launch --attach` 会为刚创建的会话打开显示端，即 Windows Terminal Tab（Windows）或 Terminal 窗口（macOS），不是当前终端，也不保证操作系统授予前台焦点。`tide attach <id>` 自动打开 Windows Terminal Tab（Windows）或 Terminal 窗口（macOS），接入原来的 shell 和正在执行的程序，不重新执行命令。Windows 使用 `wt -w 0`，在当前虚拟桌面最近使用的窗口新建 Tab；没有窗口时新建窗口。沿用调用端的 `WT_PROFILE_ID`，否则使用用户默认配置。`attach` 返回表示显示端已连接，不保证操作系统已授予前台焦点。
 
 每个会话最多一个显示端：正在打开或已接入时，重复 `attach` 直接拒绝，不查找或激活旧 Tab。关闭 Tab 只断开显示，任务继续；再次 `attach` 可恢复查看。`close` 或 shell 退出才结束会话。没有窗口时默认尺寸为 100×30，接入后跟随显示端尺寸，断开后保持最后尺寸。后台宿主错误记录在 `TIDE_STATE_DIR/session-logs/<id>.log`，不是命令输出日志。
 
@@ -54,9 +54,9 @@ tide close 5fefa
 
 `read` 和组合 `--with-read` 只选择当前/最近命令：默认前 10 行和后 30 行，不超过 40 行则完整返回；`--full` 返回完整保留区域，`--lines N` 返回末尾 N 行，两者互斥。无命令标记或 TUI 默认返回完整当前画面。所有读取去掉光标及最后内容以下的无用空白行，保留内部空行与原有空格。内部插件捕获和 idle 检测不变。
 
-`--with-command` 接收一个加引号的单行命令，先等待启动画面连续 3 秒不变（最多 30 秒），再发送文本并在 150 ms 后发送 Enter。搭配的 `--wait-idle`、`--idle-time`、`--timeout`、`--with-read`、`--lines` 复用 `send` 的语义，作用于提交命令之后；所有选项放在 `-- shell-args...` 之前。画面安静不保证提示符就绪，启动文件需要交互时仍应分步检查。启动等待超时不发送命令，返回会话信息和 `error`，退出码 1；后续失败也保留会话 ID。成功返回原会话字段及 `written`、`enterWritten` 和所请求的 `wait` / `read`。
+`--with-command` 接收一个加引号的单行命令，先等待启动画面连续 3 秒不变（最多 30 秒），再发送文本并在 150 ms 后发送 Enter。搭配的 `--wait-idle`、`--idle-time`、`--timeout`、`--with-read`、`--lines` 复用 `send` 的语义，作用于提交命令之后；所有选项放在 `-- shell-args...` 之前。画面安静不保证提示符就绪，启动文件需要交互时仍应分步检查。启动等待超时不发送命令，返回会话信息和 `error`，退出码 1；后续失败也保留会话 ID。成功返回原会话字段及 `written`、`enterWritten` 和所请求的 `wait` / `read`。加 `--attach` 时，在 Enter 之后、`--wait-idle`/`--with-read` 之前打开显示端；成功时另返回 `attached: true` 和 `display: "attached"`。attach 失败时返回 `error.stage: "attach"`，退出码 1；不自动关闭会话，已发送的命令不会重发，跳过后续等待/抓屏，用 `tide attach <id>` 重试。
 
-不带 `--with-command` 的 `launch` 返回的是会话已注册，随后用 `wait-idle <id> --with-read` 检查启动画面。超时的退出码 3 不会停止目标，仍应读取返回的画面，再决定继续等、处理提示或结束任务。结束整个 shell 才使用 `close`。
+不带 `--with-command` 的 `launch` 返回的是会话已注册，随后用 `wait-idle <id> --with-read` 检查启动画面；`launch --attach` 则创建会话后立即打开显示端。超时的退出码 3 不会停止目标，仍应读取返回的画面，再决定继续等、处理提示或结束任务。结束整个 shell 才使用 `close`。
 
 **频繁抓取长输出或滚屏查历史，通常意味着该换一种工具使用方式。** Tide 主要用于与可见的交互式终端协作、检查当前画面和处理输入提示。对于构建日志、测试结果、批量命令输出等，优先使用 Bash / Shell 执行工具或其他适合的工具，将输出重定向到文件，再用 Read 按需读取，或用 grep / rg 搜索。例如在 Bash 中执行 `your-command > output.log 2>&1`，再执行 `rg -n 'error|failed' output.log`。需要同时在终端查看时可用 `tee`。`--lines` 和 `scroll` 用于偶尔补看上下文或操作 TUI；支持这些能力，不代表推荐把反复抓屏、滚屏当作日志分析流程。
 
@@ -75,7 +75,7 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | 命令 | 行为 |
 | --- | --- |
 | `run [--shell executable] [--cwd directory] [-- shell-args...]` | 创建后台会话并接入当前终端 |
-| `launch [--shell executable] [--cwd directory] [--with-command text \| --profile label] [--wait-idle] [--with-read] [-- shell-args... \| -- <bin-args...>]` | 创建后台会话（无窗口），bash 提示符带 `T<短 ID>`；可自动发送命令、Enter，并等待和返回画面 |
+| `launch [--shell executable] [--cwd directory] [--with-command text \| --profile label] [--attach] [--wait-idle] [--with-read] [-- shell-args... \| -- <bin-args...>]` | 创建后台会话（默认无窗口），bash 提示符带 `T<短 ID>`；可自动发送命令、Enter、打开显示端，并等待和返回画面 |
 | `attach <id>` | 自动打开终端，接入原会话；关闭终端不结束会话 |
 | `profiles` | 列出 `.tide/launch-profiles.json` 里的 label、描述、env key 数量 |
 | `list` | 列出本机当前托管的 shell 会话及最近执行的 `lastCommand`，不扫描 CLI 历史 |
@@ -259,6 +259,9 @@ tide launch --profile minimax --cwd /d/foo
 
 # 透传额外参数给最后一条命令
 tide launch --profile minimax --cwd /d/foo -- --model claude-sonnet-4-20250514
+
+# 创建会话并打开终端显示端（Windows/macOS）；命令发送后才 attach
+tide launch --profile minimax --cwd /d/foo --attach
 
 # 连续跑 git pull + claude
 tide launch --profile setup-then-run --cwd /d/foo
