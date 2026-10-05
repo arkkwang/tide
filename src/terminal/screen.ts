@@ -20,6 +20,8 @@ export class Screen {
   // Prompt and latest executed command boundaries; reads are stateless.
   private promptMarker: xterm.IMarker | undefined;
   private latestMarker: xterm.IMarker | undefined;
+  private inputStart: { marker: xterm.IMarker; col: number } | undefined;
+  private lastCommand: string | null = null;
   private pending = Promise.resolve();
   private title = "";
   private content = "";
@@ -43,11 +45,20 @@ export class Screen {
     this.terminal.parser.registerOscHandler(133, (data) => {
       if (this.terminal.buffer.active.type !== "normal") return false;
       if (data === "A") {
+        this.clearInputStart();
         if (this.promptMarker !== this.latestMarker) this.promptMarker?.dispose();
         this.promptMarker = this.terminal.registerMarker(0);
-      } else if (data === "C" && this.promptMarker && !this.promptMarker.isDisposed) {
-        if (this.latestMarker !== this.promptMarker) this.latestMarker?.dispose();
-        this.latestMarker = this.promptMarker;
+      } else if (data === "B" && this.promptMarker && !this.promptMarker.isDisposed) {
+        this.clearInputStart();
+        const marker = this.terminal.registerMarker(0);
+        if (marker) this.inputStart = { marker, col: this.terminal.buffer.active.cursorX };
+      } else if (data === "C") {
+        this.lastCommand = this.submittedCommand();
+        this.clearInputStart();
+        if (this.promptMarker && !this.promptMarker.isDisposed) {
+          if (this.latestMarker !== this.promptMarker) this.latestMarker?.dispose();
+          this.latestMarker = this.promptMarker;
+        }
       }
       return false;
     });
@@ -87,7 +98,7 @@ export class Screen {
 
   async activity() {
     await this.pending;
-    return { idleForMs: Math.max(0, Math.round(this.now() - this.changedAt)), lastOutputAt: this.lastOutputAt };
+    return { idleForMs: Math.max(0, Math.round(this.now() - this.changedAt)), lastOutputAt: this.lastOutputAt, lastCommand: this.lastCommand };
   }
 
   async modes() { await this.pending; return this.terminal.modes; }
@@ -103,7 +114,44 @@ export class Screen {
     return `\x1b[<${direction === "up" ? 64 : 65};${col};${row}M`.repeat(steps);
   }
 
+  private clearInputStart() {
+    this.inputStart?.marker.dispose();
+    this.inputStart = undefined;
+  }
+
+  // Read the rendered input only at the execution boundary, before program output.
+  // Soft wraps belong to one command; hard line breaks may contain PS2 prompts,
+  // so multiline input is deliberately unknown rather than guessed.
+  private submittedCommand(): string | null {
+    const start = this.inputStart;
+    if (!start || start.marker.isDisposed) return null;
+    const buffer = this.terminal.buffer.active;
+    const end = buffer.baseY + buffer.cursorY;
+    if (end < start.marker.line) return null;
+    let command = "";
+    for (let row = start.marker.line; row <= end; row++) {
+      const line = buffer.getLine(row);
+      if (!line) return null;
+      const from = row === start.marker.line ? start.col : 0;
+      let to = row === end ? buffer.cursorX : this.terminal.cols;
+      // Readline emits CRLF before PS0; omit that final, empty row.
+      if (row === end && row > start.marker.line && to === 0) break;
+      if (row > start.marker.line && !line.isWrapped) return null;
+      // Empty cells are padding (including the gap before a wide glyph wraps).
+      // Actual typed spaces have chars=" ": preserve them, including escaped
+      // trailing spaces. translateToString(trimRight) would erase that distinction.
+      while (to > from && line.getCell(to - 1)?.getChars() === "") to--;
+      for (let col = from; col < to; col++) {
+        const cell = line.getCell(col);
+        if (!cell) return null;
+        if (cell.getWidth() !== 0) command += cell.getChars() || " ";
+      }
+    }
+    return /\S/.test(command) ? command : null;
+  }
+
   private resetRead() {
+    this.clearInputStart();
     this.latestMarker?.dispose();
     if (this.promptMarker !== this.latestMarker) this.promptMarker?.dispose();
     this.promptMarker = undefined;

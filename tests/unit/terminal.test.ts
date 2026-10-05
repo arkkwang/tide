@@ -9,7 +9,7 @@ import type { SessionInfo } from "../../src/session/types.ts";
 import { waitIdle } from "../../src/terminal/idle.ts";
 import { requestResize } from "../../src/terminal/resize.ts";
 import { defaultProfile, windowsTerminalProfile } from "../../src/terminal/windows-profile.ts";
-import { promptEnv } from "../../src/terminal/shell.ts";
+import { commandRegionEnv, promptEnv } from "../../src/terminal/shell.ts";
 import { setTimeout as sleep } from "node:timers/promises";
 
 test("session activity tracks rendered changes independently of raw output and reads", async () => {
@@ -17,7 +17,7 @@ test("session activity tracks rendered changes independently of raw output and r
   const screen = new Screen(40, 8, () => now);
   try {
     now += 500;
-    assert.deepEqual(await screen.activity(), { idleForMs: 500, lastOutputAt: null });
+    assert.deepEqual(await screen.activity(), { idleForMs: 500, lastOutputAt: null, lastCommand: null });
     await screen.write("hello");
     const first = await screen.activity();
     assert.equal(first.idleForMs, 0);
@@ -395,4 +395,61 @@ test("retained command output survives scrollback eviction; reset and sessions s
     await s.write(`\r\n${A}$ again\r\n${C}AGAIN`);
     assert.equal((await s.read('id')).text, '$ again\nAGAIN');
   } finally { s.dispose(); other.dispose(); }
+});
+
+test("lastCommand tracks executed input, not prompts, output or TUI input", async () => {
+  const screen = new Screen(40, 8);
+  const B = '\x1b]133;B\x07';
+  try {
+    assert.equal((await screen.activity()).lastCommand, null);
+    await screen.write(`${A}multi-line prompt\r\n$ ${B}echo old`);
+    assert.equal((await screen.activity()).lastCommand, null, 'typing is not execution');
+    await screen.write(`\x1b[3Dnew\r\n${C}new\r\n${A}$ ${B}`);
+    assert.equal((await screen.activity()).lastCommand, 'echo new');
+    await screen.write('cancel me\r\n^C\r\n' + A + '$ ' + B);
+    assert.equal((await screen.activity()).lastCommand, 'echo new');
+    await screen.write(`claude\r\n${C}\x1b[?1049hchat input\r\nmore chat`);
+    assert.equal((await screen.activity()).lastCommand, 'claude');
+    screen.resize(50, 10);
+    await screen.write('\x1b[2J\x1b[H');
+    assert.equal((await screen.activity()).lastCommand, 'claude', 'resize/clear preserve executed command');
+    await screen.write(`\x1b[?1049l\r\n${A}$ ${B}pwd\r\n${C}/tmp\r\n`);
+    assert.equal((await screen.activity()).lastCommand, 'pwd');
+  } finally { screen.dispose(); }
+});
+
+test("lastCommand joins soft wraps and rejects unrecognized or multiline input", async () => {
+  const screen = new Screen(20, 6);
+  const B = '\x1b]133;B\x07';
+  try {
+    const command = 'echo 123456789012345678901234567890';
+    await screen.write(`${A}$ ${B}${command}\r\n${C}`);
+    assert.equal((await screen.activity()).lastCommand, command);
+    await screen.write(`\r\n${A}$ ${B}echo 'first\r\n> second'\r\n${C}`);
+    assert.equal((await screen.activity()).lastCommand, null, 'do not mistake PS2 for command text');
+    await screen.write(`\r\n${A}$ pwd\r\n${C}`);
+    assert.equal((await screen.activity()).lastCommand, null, 'old integration without B is unknown');
+    await screen.write(`\r\n${A}$ ${B}pwd`);
+    screen.resize(25, 6);
+    await screen.write(`\r\n${C}`);
+    assert.equal((await screen.activity()).lastCommand, null, 'lost input boundary is unknown');
+  } finally { screen.dispose(); }
+});
+
+test("Bash command integration marks prompt end without duplicating hooks", () => {
+  const env = commandRegionEnv('bash', promptEnv('bash', 'abc', ''));
+  assert.match(env.PROMPT_COMMAND!, /133;B/);
+  assert.deepEqual(commandRegionEnv('bash', env), env);
+  assert.deepEqual(commandRegionEnv('pwsh', { PROMPT_COMMAND: 'existing' }), { PROMPT_COMMAND: 'existing' });
+});
+
+test("lastCommand excludes wide-wrap padding but preserves literal input whitespace", async () => {
+  const B = '\x1b]133;B\x07';
+  for (const command of ['echo 123456789012中', 'printf foo\\ ', '  echo keep  spaces  ', 'echo 1234567890123中', 'echo 12345678901 中']) {
+    const screen = new Screen(20, 6);
+    try {
+      await screen.write(`${A}$ ${B}${command}\r\n${C}`);
+      assert.equal((await screen.activity()).lastCommand, command);
+    } finally { screen.dispose(); }
+  }
 });

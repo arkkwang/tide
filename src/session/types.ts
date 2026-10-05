@@ -9,6 +9,8 @@ export interface SessionInfo {
   exitCode: number | null;
   idleForMs?: number;
   lastOutputAt?: string | null;
+  // Last recognized shell command, not foreground-process or task status.
+  lastCommand?: string | null;
   display?: "detached" | "opening" | "attached";
 }
 

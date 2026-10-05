@@ -144,6 +144,8 @@ test("local help keeps parameter contracts rather than workflow instructions", (
   assert.match(commandHelp.resize!, /applied=false, exit 3/);
   assert.match(commandHelp['wait-idle']!, /leaves the task running/);
   assert.match(commandHelp.close!, /including ongoing work/);
+  assert.match(commandHelp.list!, /lastCommand.*null when unknown/);
+  assert.match(commandHelp.info!, /lastCommand/);
   assert.match(commandHelp.plugin!, /NEW sessions/);
   assert.match(commandHelp.plugin!, /loads and validates local code/);
   assert.match(commandHelp.plugin!, /consume tokens/);

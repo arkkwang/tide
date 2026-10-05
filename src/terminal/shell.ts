@@ -60,7 +60,7 @@ export function shellCommand(options: ShellOptions) {
 // rewriting: interactive programs and user input keep their existing behavior.
 export function commandRegionEnv(shell: string, prompt: Record<string, string>): Record<string, string> {
   if (shellName(shell) !== "bash") return prompt;
-  const hook = String.raw`case "$PS1" in *'\e]133;A\a'*) ;; *) PS1='\[\e]133;A\a\]'"$PS1" ;; esac; case "$PS0" in *'\e]133;C\a'*) ;; *) PS0='\e]133;C\a'"$PS0" ;; esac`;
+  const hook = String.raw`case "$PS1" in *'\e]133;A\a'*) ;; *) PS1='\[\e]133;A\a\]'"$PS1" ;; esac; case "$PS1" in *'\e]133;B\a'*) ;; *) PS1="$PS1"'\[\e]133;B\a\]' ;; esac; case "$PS0" in *'\e]133;C\a'*) ;; *) PS0='\e]133;C\a'"$PS0" ;; esac`;
   const inherited = prompt.PROMPT_COMMAND ?? "";
   return { ...prompt, PROMPT_COMMAND: inherited.includes(hook) ? inherited : `${inherited}${inherited ? "; " : ""}${hook}` };
 }

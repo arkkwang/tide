@@ -58,11 +58,14 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     t.diagnostic('two hosts registered');
     const short = a.id.slice(0, 8);
     await until(short, (s) => s.text.includes("$"));
-    assert.equal((await requestSession<SessionInfo>(short, { command: "info" }, registry)).id, a.id);
+    const initialInfo = await requestSession<SessionInfo>(short, { command: "info" }, registry);
+    assert.equal(initialInfo.id, a.id);
+    assert.equal(initialInfo.lastCommand, null);
     const sent = await cli(["send", short, "/help"], true);
     assert.equal(sent.code, 0, sent.err);
     const filled = await until(short, (s) => s.text.includes("/help"));
     assert(!filled.text.includes("Git/help"));
+    assert.equal((await requestSession<SessionInfo>(short, { command: "info" }, registry)).lastCommand, null, 'unsubmitted input is not a command');
     // Plugin arguments are literal text too: `tide <plugin-id> <command> ...` is a
     // namespace, and bin/tide must keep MSYS from rewriting them the same way.
     const pluginLiteral = await cli(['screen', 'contains', short, '/help'], true);
@@ -86,6 +89,8 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     const listedActivity = listed.find((s) => s.id === a.id)!;
     assert(listedActivity.idleForMs! >= activity.idleForMs);
     assert.equal(listedActivity.lastOutputAt, activity.lastOutputAt);
+    assert.equal(activity.lastCommand, "printf 'FORMAL_%s_OK\\n' SHELL");
+    assert.equal(listedActivity.lastCommand, activity.lastCommand);
     const json = await cli(["read", short]);
     const plain = await cli(["read", short, "--plain-text"]);
     assert.equal(json.code, 0); assert.equal(plain.code, 0);
@@ -354,6 +359,7 @@ test("launch submits a command and returns its rendered output in one call", { s
     assert.equal(launched.wait.idle, true);
     assert.equal(launched.read.id, launched.id);
     assert.equal(typeof launched.shellPid, "number");
+    assert.equal(JSON.parse(cli("info", launched.id).stdout).lastCommand, "printf 'LAUNCH_%s_OK\\n' COMBINED");
     assert.match(launched.read.text, /LAUNCH_COMBINED_OK/);
     assert.ok(launched.read.text.includes(`T${launched.id.slice(0, 8)}`), `prompt marker missing: ${launched.read.text}`);
     assert.doesNotMatch(launched.read.text, /__git_ps1: command not found/);

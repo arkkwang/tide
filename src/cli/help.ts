@@ -38,11 +38,11 @@ ${observation}`,
   },
   list: {
     usage: ['list'],
-    summary: 'List live Tide sessions and their IDs as JSON.',
+    summary: 'List live Tide sessions as JSON, including lastCommand (null when unknown).',
   },
   info: {
     usage: ['info <id>'],
-    summary: 'Return shell metadata as JSON, not semantic task status.',
+    summary: 'Return shell metadata and lastCommand as JSON, not semantic task status.',
   },
   send: {
     usage: ['send <id> <text> [--with-enter]', 'send <id> --stdin [--with-enter]', 'send <id> --key <key> [keys...]'],

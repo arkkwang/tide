@@ -60,6 +60,8 @@ tide close 5fefa
 
 **频繁抓取长输出或滚屏查历史，通常意味着该换一种工具使用方式。** Tide 主要用于与可见的交互式终端协作、检查当前画面和处理输入提示。对于构建日志、测试结果、批量命令输出等，优先使用 Bash / Shell 执行工具或其他适合的工具，将输出重定向到文件，再用 Read 按需读取，或用 grep / rg 搜索。例如在 Bash 中执行 `your-command > output.log 2>&1`，再执行 `rg -n 'error|failed' output.log`。需要同时在终端查看时可用 `tee`。`--lines` 和 `scroll` 用于偶尔补看上下文或操作 TUI；支持这些能力，不代表推荐把反复抓屏、滚屏当作日志分析流程。
 
+`list` 和 `info` 返回 `lastCommand`：最近一次识别到开始执行的 shell 命令（例如 `"claude --resume"`），结束后保留，下一条命令开始时更新；未提交的输入、程序输出和 TUI 聊天不更新它。复用 Bash 4.4+ 的提示符结束/执行边界，从终端回显提取命令，不扫描历史、不额外保存到磁盘。支持单行命令的屏幕自动折行；多行输入、未识别的 shell 或丢失输入边界时为 `null`。清屏和调整窗口不会删除已记录的命令，但可能影响下一次识别。它不是当前进程名或可信执行审计，命令中的敏感参数也可能显示出来。旧宿主没有此字段，需新开会话。
+
 `list` 和 `info` 还返回实时活动信息：`idleForMs` 是当前画面持续未变化的毫秒数；`lastOutputAt` 是最后收到 PTY 输出的 UTC ISO 时间，尚无输出时为 `null`。文本、尺寸或活动缓冲区变化会重置 idle，重复重绘、颜色、标题和光标变化不会，但任何非空输出都会更新 `lastOutputAt`。无输出时 idle 从屏幕初始化开始计时，查询和抓屏不重置计时。可先用 `list` 筛选长时间安静的会话，再抓屏判断；这些字段不表示任务完成、故障或需要介入。旧宿主可能不包含这两个字段，新开会话后生效。
 
 Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参数关闭 MSYS 路径转换，避免 `/help` 被改成 `D:/.../Git/help`。引号本身不能阻止这种转换。PowerShell 可直接 `node dist/tide.mjs ...`；在 Git Bash 直接调用 Node 时，文本命令需要 `MSYS2_ARG_CONV_EXCL='*' node dist/tide.mjs send ...`。
@@ -76,7 +78,7 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | `launch [--shell executable] [--cwd directory] [--with-command text \| --profile label] [--wait-idle] [--with-read] [-- shell-args... \| -- <bin-args...>]` | 创建后台会话（无窗口），bash 提示符带 `T<短 ID>`；可自动发送命令、Enter，并等待和返回画面 |
 | `attach <id>` | 自动打开终端，接入原会话；关闭终端不结束会话 |
 | `profiles` | 列出 `.tide/launch-profiles.json` 里的 label、描述、env key 数量 |
-| `list` | 列出本机当前托管的 shell 会话，不扫描 CLI 历史 |
+| `list` | 列出本机当前托管的 shell 会话及最近执行的 `lastCommand`，不扫描 CLI 历史 |
 | `info <id>` | 返回 Tide ID、PID、shell、目录等进程信息 |
 | `send <id> <text>` | 写入文本；加 `--with-enter` 在文本后发送回车 |
 | `send <id> --stdin` | 从管道读取 UTF-8 原文，适合长文本与多行 |
