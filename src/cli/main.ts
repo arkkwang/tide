@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { runSession } from "../session/host.js";
 import { launchSession, consumeLaunch, attachSession } from "../session/launch.js";
 import { viewSession } from "../session/view.js";
-import { liveSessions, requestSession } from "../session/ipc.js";
+import { closeAllSessions, liveSessions, requestSession } from "../session/ipc.js";
 import { stateDirectory } from "../session/registry.js";
 import { errorMessage, type SessionInfo, type ShellOptions, type Snapshot, type IdleResult } from "../session/types.js";
 import { validateSize } from "../terminal/resize.js";
@@ -224,6 +224,13 @@ async function main() {
     return;
   }
   if (command === "list") { expectCount(args, 0); print((await liveSessions()).map(({ info }) => info)); return; }
+  if (command === "close" && args.includes("--all")) {
+    if (args.length !== 1) throw Error("close --all cannot combine with a session ID or other arguments");
+    const results = await closeAllSessions();
+    print(results);
+    if (results.some((result) => "error" in result)) process.exitCode = 1;
+    return;
+  }
   const [id, ...rest] = args;
   if (!id) throw Error(`${command} requires a session ID`);
   switch (command) {

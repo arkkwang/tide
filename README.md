@@ -68,6 +68,8 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 
 包的 `bin` 也指向该 shell 入口；使用 npm 安装的 Windows 命令需要 Git Bash 在 PATH 中。尚未全局安装时直接 `bash bin/tide ...` 即可。
 
+`tide close --all` 无需逐个填写 ID，也不另行确认；仅处理调用时当前状态目录里登记的会话，不影响其他 `TIDE_STATE_DIR`，不包含之后新建的会话。返回每个会话的 JSON 结果：`closing: true` 表示已受理关闭（不代表宿主清理已完成），`stale: true` 表示端点已不存在且清除了失效登记，`error` 表示该项失败或结果不确定。单个失败不阻断其他会话，存在失败时退出码为 1；无会话返回 `[]`、退出码 0。`--all` 不能和 ID 或其他参数混用。
+
 ## 命令
 
 命令自带完整帮助，Agent 无需先读 README：`tide --help` 查看能力和操作流程，`tide help send` 或 `tide send --help` 查看参数、输出、示例和失败处理。`--help` 必须紧跟命令单独使用；`tide send <id> '--help'` 仍会发送原文。插件通过 `tide plugin list` 发现，某个插件自己的命令用 `tide <插件 ID> --help` 查看；命令描述应说明参数、行为和返回值。
@@ -87,7 +89,7 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | `resize <id> --cols N --rows N` | 后台时直接调整 PTY，已接入时请求外层窗口调整尺寸 |
 | `read <id> [--lines N] [--full] [--plain-text]` | 获取解析后的终端画面 |
 | `wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-read]` | 等待画面连续不变，或到达超时，可同时返回画面 |
-| `close <id>` | 结束该托管 shell 和会话；不是 CLI 回合打断 |
+| `close <id>` / `close --all` | 结束指定会话或当前 `TIDE_STATE_DIR` 下的全部会话，包括正在执行的任务；不是 CLI 回合打断 |
 | `plugin list` | 列出 Tide 知道的插件及启用状态，不访问会话 |
 | `plugin enable <名称\|路径>` / `plugin disable <名称\|路径>` | 改写 `.tide/plugins.json` 的插件列表，只对之后启动的会话生效 |
 | `plugin status <id>` | 查看该会话的插件匹配结果、命令和插件错误 |

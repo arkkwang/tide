@@ -77,5 +77,8 @@ test("both bundled plugins recover only interrupted tasks through real Tide sess
       }
     }
   }
+  // Viewer exit can precede the host's registry cleanup; close only acknowledges
+  // the request. Wait for the actual lifecycle result rather than racing it.
+  await until(async () => registry.records(), (records) => records.length === 0);
   assert.deepEqual(registry.records(), []);
 });

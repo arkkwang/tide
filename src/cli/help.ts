@@ -101,8 +101,8 @@ ${observation}`,
 ${observation}`,
   },
   close: {
-    usage: ['close <id>'],
-    summary: 'Terminate the hosted shell/session, including ongoing work.',
+    usage: ['close <id> | close --all'],
+    summary: 'Terminate the hosted shell/session, including ongoing work; --all targets this TIDE_STATE_DIR and returns per-session results (exit 1 on any failure).',
   },
   profiles: {
     usage: ['profiles'],

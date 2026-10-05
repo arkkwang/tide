@@ -372,6 +372,14 @@ test("launch submits a command and returns its rendered output in one call", { s
     assert.equal(timeout.read.id, timeout.id);
     assert(timeout.read.text.split("\n").filter((line: string) => !line.startsWith('[Earlier ')).length <= 5);
     assert.equal(cli("info", timeout.id).status, 0);
+    const closed = cli("close", "--all");
+    assert.equal(closed.status, 0, closed.stderr);
+    const results = JSON.parse(closed.stdout) as Array<{ id: string; closing: boolean }>;
+    assert.deepEqual(results.map(result => result.id).sort(), [launched.id, timeout.id].sort());
+    assert(results.every(result => result.closing === true));
+    for (let i = 0; i < 100 && registry.records().length; i++) await sleep(100);
+    assert.deepEqual(registry.records(), []);
+    assert.deepEqual(JSON.parse(cli("close", "--all").stdout), []);
   } finally {
     for (const record of registry.records()) {
       try { await rpc(record, { command: "close" }); } catch {}

@@ -79,6 +79,27 @@ export async function liveSessions(registry = new Registry()): Promise<Array<{ r
   return results.filter((entry) => entry !== null);
 }
 
+// Snapshot this registry once: sessions started later are not part of this close.
+// Contact each endpoint independently so one unreachable host cannot block others.
+export async function closeAllSessions(registry = new Registry()) {
+  return Promise.all(registry.records().map(async (record) => {
+    try {
+      return await rpc<{ id: string; closing: true }>(record, { command: "close" });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ECONNREFUSED") {
+        try {
+          registry.remove(record.id);
+          return { id: record.id, stale: true };
+        } catch (cleanupError) {
+          return { id: record.id, error: { message: errorMessage(cleanupError) } };
+        }
+      }
+      return { id: record.id, error: { message: errorMessage(error) } };
+    }
+  }));
+}
+
 export async function sessionRecord(prefix: string, registry = new Registry()): Promise<SessionRecord> {
   const exact = registry.records().find((record) => record.id === prefix);
   if (exact) return exact;
