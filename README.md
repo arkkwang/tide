@@ -6,7 +6,7 @@
 
 ## 平台支持
 
-支持 Windows（经 Git Bash）和 macOS，需要 Node 20+；CI 也只跑这两个系统。
+支持 Windows（经 Git Bash）和 macOS，需要 Node 20+。
 
 - `attach` 和 `launch --attach` 只在 Windows 与 macOS 上实现，其他平台直接报错，不静默降级。
 - Linux 及其他平台未验证。`node-pty` 的预编译产物只覆盖 win32 / darwin，Linux 安装会退回 `node-gyp` 源码编译，能否成功取决于本机构建环境。
@@ -328,7 +328,7 @@ npm run typecheck
 npm test
 ```
 
-测试覆盖终端控制序列、组合键、短 ID 歧义、Git Bash 斜杠参数、真实 PTY/shell、纯文本输出、Plugin 检测与生命周期、本地通信和关闭注销。Windows 已实机验证；macOS 的窗口行为仍需实机验收，CI 保留 Windows/macOS 矩阵。
+测试覆盖终端控制序列、组合键、短 ID 歧义、Git Bash 斜杠参数、真实 PTY/shell、纯文本输出、Plugin 检测与生命周期、本地通信和关闭注销。Windows 已实机验证；macOS 的窗口行为仍需实机验收。
 
 `scripts/acceptance.mjs` 是手动验收脚本，覆盖自动化测试不便覆盖的路径：经 Tide 驱动 Claude 完成一个小任务并核对产物、Node REPL 表达式与 Ctrl+U、在一个会话内调用 Tide 操作另一个会话、持续刷屏后的超时与 idle、长等待、CLI 退出后回到同一 shell。
 

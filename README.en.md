@@ -8,7 +8,7 @@ Persistent interactive shells shared by humans and Agents: sessions are created 
 
 ## Platform support
 
-Windows (via Git Bash) and macOS are supported, with Node 20+. CI runs on those two systems only.
+Windows (via Git Bash) and macOS are supported, with Node 20+.
 
 - `attach` and `launch --attach` are implemented on Windows and macOS only. Other platforms get an explicit error, never a silent downgrade.
 - Linux and other platforms are unverified. `node-pty` ships prebuilt binaries for win32 and darwin only; on Linux installation falls back to a `node-gyp` source build, which may or may not succeed depending on your build environment.
@@ -331,7 +331,7 @@ npm run typecheck
 npm test
 ```
 
-Tests cover terminal control sequences, key combinations, short-ID ambiguity, Git Bash slash arguments, real PTYs and shells, plain-text output, plugin detection and lifecycle, local communication and close deregistration. Windows has been verified on real hardware; macOS window behaviour still needs real-device acceptance, and CI keeps the Windows/macOS matrix.
+Tests cover terminal control sequences, key combinations, short-ID ambiguity, Git Bash slash arguments, real PTYs and shells, plain-text output, plugin detection and lifecycle, local communication and close deregistration. Windows has been verified on real hardware; macOS window behaviour still needs real-device acceptance.
 
 `scripts/acceptance.mjs` is a manual acceptance script covering paths that automated tests cannot: driving Claude through a small task via Tide and checking the artefact, Node REPL expressions and Ctrl+U, calling Tide from inside one session to operate another, the timeout and idle behaviour after continuous screen output, long waits, and returning to the same shell after the CLI exits.
 
