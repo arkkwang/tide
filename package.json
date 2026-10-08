@@ -1,6 +1,6 @@
 {
   "name": "@arkkwang/tide",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Visible interactive shell sessions with text, key and screen access for agents",
   "license": "MIT",
   "author": "arkkwang",
