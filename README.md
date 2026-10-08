@@ -85,11 +85,15 @@ tide close 5fefa
 
 `list` 和 `info` 还返回实时活动信息：`idleForMs` 是当前画面持续未变化的毫秒数；`lastOutputAt` 是最后收到 PTY 输出的 UTC ISO 时间，尚无输出时为 `null`。文本、尺寸或活动缓冲区变化会重置 idle，重复重绘、颜色、标题和光标变化不会，但任何非空输出都会更新 `lastOutputAt`。无输出时 idle 从屏幕初始化开始计时，查询和抓屏不重置计时。可先用 `list` 筛选长时间安静的会话，再抓屏判断；这些字段不表示任务完成、故障或需要介入。旧宿主可能不包含这两个字段，新开会话后生效。
 
+同时返回 `promptState`：`at-prompt` 表示最近一次 bash 提示符边界（OSC 133 `A`/`B`）之后没有看到命令提交（`C`），`running` 表示最近看到的是命令提交，`unknown` 表示从未看到边界（非 bash shell，或启动文件覆盖了提示符集成）。它只描述屏幕上可见的提示符/执行边界：等待输入的前台程序（`cat`、需要确认的脚本）算 `running`，不区分任务是否完成，也不代表可以安全结束。清屏和 resize 不改变它，下一条提示符会恢复追踪。前台程序自己输出这些转义序列时同样会影响判断。旧宿主没有此字段，需新开会话。
+
 Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参数关闭 MSYS 路径转换，避免 `/help` 被改成 `D:/.../Git/help`。引号本身不能阻止这种转换。PowerShell 可直接 `node dist/tide.mjs ...`；在 Git Bash 直接调用 Node 时，文本命令需要 `MSYS2_ARG_CONV_EXCL='*' node dist/tide.mjs send ...`。
 
 包的 `bin` 也指向该 shell 入口；使用 npm 安装的 Windows 命令需要 Git Bash 在 PATH 中。尚未全局安装时直接 `bash bin/tide ...` 即可。
 
 `tide close --all` 无需逐个填写 ID，也不另行确认；仅处理调用时当前状态目录里登记的会话，不影响其他 `TIDE_STATE_DIR`，不包含之后新建的会话。返回每个会话的 JSON 结果：`closing: true` 表示已受理关闭（不代表宿主清理已完成），`stale: true` 表示端点已不存在且清除了失效登记，`error` 表示该项失败或结果不确定。单个失败不阻断其他会话，存在失败时退出码为 1；无会话返回 `[]`、退出码 0。`--all` 不能和 ID 或其他参数混用。
+
+`tide close --idle` 只关掉当前状态目录里“停在提示符前”的会话：要求 `promptState` 为 `at-prompt`（bash 提示符边界之后没有提交过命令），且 `display` 为 `detached`。它不看 `idleForMs`，也不等待：正在执行命令、正在等待输入的前台程序、没有提示符边界（非 bash）以及已接入显示端的会话都不会被关闭，未关闭的条目用 `skipped` 说明原因：`attached`、`command-running`、`prompt-unknown`。停在提示符前但尚未回车的输入、以及 `&` 起的后台任务都不算排除条件；它们由调用者自己负责（关掉后台任务通常是预期结果）。`--idle` 不接受参数值：阈值判断对单用户本地工具没有实际价值。输出仍是逐会话结果数组，`closing`、`stale`、`error` 与 `--all` 含义相同，失败时退出码 1，无会话返回 `[]`。`--idle` 与 `--all` 互斥，也不能和 ID 或参数值混用。
 
 ## 命令
 
@@ -110,7 +114,7 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | `resize <id> --cols N --rows N` | 后台时直接调整 PTY，已接入时请求外层窗口调整尺寸 |
 | `read <id> [--lines N] [--full] [--plain-text]` | 获取解析后的终端画面 |
 | `wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-read]` | 等待画面连续不变，或到达超时，可同时返回画面 |
-| `close <id>` / `close --all` | 结束指定会话或当前 `TIDE_STATE_DIR` 下的全部会话，包括正在执行的任务；不是 CLI 回合打断 |
+| `close <id>` / `close --all` / `close --idle` | 结束指定会话、当前 `TIDE_STATE_DIR` 下的全部会话，或停在 bash 提示符前的会话，包括正在执行的任务；不是 CLI 回合打断 |
 | `plugin list` | 列出 Tide 知道的插件及启用状态，不访问会话 |
 | `plugin enable <名称\|路径>` / `plugin disable <名称\|路径>` | 改写 `.tide/plugins.json` 的插件列表，只对之后启动的会话生效 |
 | `plugin status <id>` | 查看该会话的插件匹配结果、命令和插件错误 |

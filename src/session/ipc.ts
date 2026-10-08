@@ -79,24 +79,39 @@ export async function liveSessions(registry = new Registry()): Promise<Array<{ r
   return results.filter((entry) => entry !== null);
 }
 
-// Snapshot this registry once: sessions started later are not part of this close.
-// Contact each endpoint independently so one unreachable host cannot block others.
-export async function closeAllSessions(registry = new Registry()) {
-  return Promise.all(registry.records().map(async (record) => {
+// The two ways a record can fail without a session being reached: the endpoint is
+// gone (the dead record is removed) or the request failed with no known outcome.
+type Unreachable = { id: string; stale: true } | { id: string; error: { message: string } };
+
+// Contact one endpoint independently so one unreachable host cannot block others.
+async function contact<T>(registry: Registry, record: SessionRecord, request: Request, timeout?: number): Promise<T | Unreachable> {
+  try { return await rpc<T>(record, request, timeout); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ECONNREFUSED") return { id: record.id, error: { message: errorMessage(error) } };
     try {
-      return await rpc<{ id: string; closing: true }>(record, { command: "close" });
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ECONNREFUSED") {
-        try {
-          registry.remove(record.id);
-          return { id: record.id, stale: true };
-        } catch (cleanupError) {
-          return { id: record.id, error: { message: errorMessage(cleanupError) } };
-        }
-      }
-      return { id: record.id, error: { message: errorMessage(error) } };
-    }
+      registry.remove(record.id);
+      return { id: record.id, stale: true };
+    } catch (cleanupError) { return { id: record.id, error: { message: errorMessage(cleanupError) } }; }
+  }
+}
+
+// Snapshot this registry once: sessions started later are not part of this close.
+export async function closeAllSessions(registry = new Registry()) {
+  return Promise.all(registry.records().map((record) => contact<{ id: string; closing: true }>(registry, record, { command: "close" })));
+}
+
+// --idle closes only sessions whose shell is waiting at a prompt: no foreground
+// command in flight and no display attached. A session whose shell emits no
+// prompt markers stays unknown and is never closed here, because a screen that
+// has stopped changing cannot tell a finished task from a silent one.
+export async function closeIdleSessions(registry = new Registry()) {
+  return Promise.all(registry.records().map(async (record) => {
+    const info = await contact<SessionInfo>(registry, record, { command: "info" }, 1000);
+    if ("error" in info || "stale" in info) return info;
+    if (info.display !== "detached") return { id: record.id, skipped: "attached" as const };
+    if (info.promptState !== "at-prompt") return { id: record.id, skipped: info.promptState === "running" ? "command-running" as const : "prompt-unknown" as const };
+    return await contact<{ id: string; closing: true }>(registry, record, { command: "close" });
   }));
 }
 

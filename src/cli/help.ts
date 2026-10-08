@@ -44,11 +44,11 @@ ${observation}`,
   },
   list: {
     usage: ['list'],
-    summary: 'List live Tide sessions as JSON, including lastCommand (null when unknown).',
+    summary: 'List live Tide sessions as JSON, including lastCommand (null when unknown), idleForMs and promptState.',
   },
   info: {
     usage: ['info <id>'],
-    summary: 'Return shell metadata and lastCommand as JSON, not semantic task status.',
+    summary: 'Return shell metadata, lastCommand and promptState as JSON, not semantic task status.',
   },
   send: {
     usage: ['send <id> <text> [--with-enter]', 'send <id> --stdin [--with-enter]', 'send <id> --key <key> [keys...]'],
@@ -101,8 +101,8 @@ ${observation}`,
 ${observation}`,
   },
   close: {
-    usage: ['close <id> | close --all'],
-    summary: 'Terminate the hosted shell/session, including ongoing work; --all targets this TIDE_STATE_DIR and returns per-session results (exit 1 on any failure).',
+    usage: ['close <id> | close --all | close --idle'],
+    summary: 'Terminate the hosted shell/session, including ongoing work; --all targets this TIDE_STATE_DIR, --idle closes only sessions waiting at a bash prompt with no display attached, the two flags are mutually exclusive and take no ID, and both return per-session results (untouched sessions report skipped: attached | command-running | prompt-unknown; exit 1 on any failure).',
   },
   profiles: {
     usage: ['profiles'],
@@ -147,6 +147,7 @@ ${Object.values(commands).map(command => command.usage.map(usage => `  ${usage}`
 
 Text does not auto-submit; use --with-enter.
 written acknowledges input delivery; idle means an unchanged screen, not completion.
+promptState is a visible shell prompt/execution boundary, not process or task status.
 `;
 
 export function help(command?: string): string {

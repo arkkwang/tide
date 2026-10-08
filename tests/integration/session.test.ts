@@ -91,6 +91,8 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     assert.equal(listedActivity.lastOutputAt, activity.lastOutputAt);
     assert.equal(activity.lastCommand, "printf 'FORMAL_%s_OK\\n' SHELL");
     assert.equal(listedActivity.lastCommand, activity.lastCommand);
+    assert.equal(activity.promptState, 'at-prompt', 'the bash prompt boundary is visible again');
+    assert.equal(listedActivity.promptState, activity.promptState);
     const json = await cli(["read", short]);
     const plain = await cli(["read", short, "--plain-text"]);
     assert.equal(json.code, 0); assert.equal(plain.code, 0);

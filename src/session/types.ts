@@ -1,3 +1,8 @@
+// Display-layer boundary seen from the shell's own markers (bash OSC 133): a
+// prompt is on screen, or a command was submitted and no new prompt has followed.
+// Not process state: a program waiting for input reads as "running".
+export type PromptState = "at-prompt" | "running" | "unknown";
+
 export interface SessionInfo {
   id: string;
   pid: number;
@@ -11,6 +16,7 @@ export interface SessionInfo {
   lastOutputAt?: string | null;
   // Last recognized shell command, not foreground-process or task status.
   lastCommand?: string | null;
+  promptState?: PromptState;
   display?: "detached" | "opening" | "attached";
 }
 

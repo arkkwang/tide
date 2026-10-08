@@ -1,7 +1,7 @@
 import xterm from "@xterm/headless";
 import serialize from "@xterm/addon-serialize";
 import { PendingVT } from "./pending-vt.js";
-import type { Snapshot } from "../session/types.js";
+import type { PromptState, Snapshot } from "../session/types.js";
 import { performance } from "node:perf_hooks";
 
 export const MAX_CAPTURE_LINES = 2000;
@@ -22,6 +22,9 @@ export class Screen {
   private latestMarker: xterm.IMarker | undefined;
   private inputStart: { marker: xterm.IMarker; col: number } | undefined;
   private lastCommand: string | null = null;
+  // A/B are prompt side, C is the execution boundary. Kept across clear and
+  // resize: neither changes which side of the last boundary the shell is on.
+  private promptState: PromptState = "unknown";
   private pending = Promise.resolve();
   private title = "";
   private content = "";
@@ -45,14 +48,17 @@ export class Screen {
     this.terminal.parser.registerOscHandler(133, (data) => {
       if (this.terminal.buffer.active.type !== "normal") return false;
       if (data === "A") {
+        this.promptState = "at-prompt";
         this.clearInputStart();
         if (this.promptMarker !== this.latestMarker) this.promptMarker?.dispose();
         this.promptMarker = this.terminal.registerMarker(0);
       } else if (data === "B" && this.promptMarker && !this.promptMarker.isDisposed) {
+        this.promptState = "at-prompt";
         this.clearInputStart();
         const marker = this.terminal.registerMarker(0);
         if (marker) this.inputStart = { marker, col: this.terminal.buffer.active.cursorX };
       } else if (data === "C") {
+        this.promptState = "running";
         this.lastCommand = this.submittedCommand();
         this.clearInputStart();
         if (this.promptMarker && !this.promptMarker.isDisposed) {
@@ -98,7 +104,7 @@ export class Screen {
 
   async activity() {
     await this.pending;
-    return { idleForMs: Math.max(0, Math.round(this.now() - this.changedAt)), lastOutputAt: this.lastOutputAt, lastCommand: this.lastCommand };
+    return { idleForMs: Math.max(0, Math.round(this.now() - this.changedAt)), lastOutputAt: this.lastOutputAt, lastCommand: this.lastCommand, promptState: this.promptState };
   }
 
   async modes() { await this.pending; return this.terminal.modes; }

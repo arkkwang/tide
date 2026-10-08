@@ -17,7 +17,7 @@ test("session activity tracks rendered changes independently of raw output and r
   const screen = new Screen(40, 8, () => now);
   try {
     now += 500;
-    assert.deepEqual(await screen.activity(), { idleForMs: 500, lastOutputAt: null, lastCommand: null });
+    assert.deepEqual(await screen.activity(), { idleForMs: 500, lastOutputAt: null, lastCommand: null, promptState: "unknown" });
     await screen.write("hello");
     const first = await screen.activity();
     assert.equal(first.idleForMs, 0);
@@ -42,6 +42,30 @@ test("session activity tracks rendered changes independently of raw output and r
     now += 500;
     await screen.write("\x1b[?1049h");
     assert.equal((await screen.activity()).idleForMs, 0);
+  } finally { screen.dispose(); }
+});
+
+test("promptState follows the shell prompt and execution boundaries", async () => {
+  const screen = new Screen(40, 8);
+  try {
+    assert.equal((await screen.activity()).promptState, "unknown", "no markers seen yet");
+    await screen.write("\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert.equal((await screen.activity()).promptState, "at-prompt");
+    await screen.write("echo hi\r\n\x1b]133;C\x07hi\r\n");
+    assert.equal((await screen.activity()).promptState, "running");
+    // Alternate-screen output cannot move the boundary, whatever it emits.
+    await screen.write("\x1b[?1049h\x1b]133;A\x07");
+    assert.equal((await screen.activity()).promptState, "running");
+    await screen.write("\x1b[?1049l");
+    // Clear and resize drop the markers but not which side of them we are on.
+    await screen.write("\x1b[2J");
+    screen.resize(50, 10);
+    assert.equal((await screen.activity()).promptState, "running");
+    await screen.write("\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert.equal((await screen.activity()).promptState, "at-prompt", "the next prompt recovers the boundary");
+    // Typing without executing stays on the prompt side.
+    await screen.write("ls");
+    assert.equal((await screen.activity()).promptState, "at-prompt");
   } finally { screen.dispose(); }
 });
 
