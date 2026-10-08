@@ -34,7 +34,7 @@ export function loadProfiles(stateDir: string, env: NodeJS.ProcessEnv = process.
     throw new Error(
       `Profile config not found: ${path}\n` +
       `Set TIDE_LAUNCH_PROFILES=<path> or create ${path} with shape:\n` +
-      `  { "profiles": [ { "label": "minimax", "description": "...", "env": { "ANTHROPIC_AUTH_TOKEN": "..." }, "commands": ["claude --dangerously-skip-permissions"] } ] }\n` +
+      `  { "profiles": [ { "label": "example", "description": "...", "env": { "MY_API_KEY": "..." }, "commands": ["my-cli"] } ] }\n` +
       `label must match [a-zA-Z0-9_-]+; commands is a non-empty array of single-line shell commands run after env is set.`
     );
   }

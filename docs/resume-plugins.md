@@ -48,7 +48,7 @@ ping/pong 确认一次模型请求成功，不保证之后不会再次断线。�
 
 Codex 网络探测使用官方 `codex exec --ephemeral --sandbox read-only --output-last-message <临时文件>`。禁用 hooks 和 shell 工具，关闭审批请求，提示只回复 pong。只读取最终回复文件，并同时要求退出码为 0、回复严格为 pong；不把日志里的 pong 当作成功，也不读取历史 JSONL。临时回复文件用后删除。超时为 30 秒，探测消耗少量模型 token，不恢复或改写原 TUI 会话。`doctor`、`/healthz` 仅能诊断本地环境/服务，不能替代这次模型请求。参考 [Codex CLI 参数](https://developers.openai.com/codex/cli/reference)。
 
-Codex 启动短生命周期 `codex app-server`，完成 initialize/initialized 后调用 `account/rateLimits/read`，不启动模型回合。只有服务端明确返回 `ordinaryUsageAllowed: true` 才确认恢复；`false` 表示仍阻塞，缺失/null 表示未知。本机生成的协议明确禁止在该许可缺失时，仅靠额度百分比或重置时间推断恢复。没有可用账号认证、API key/第三方代理不支持该接口时保持未知，不发送继续、不更改登录态。
+Codex 启动短生命周期 `codex app-server`，完成 initialize/initialized 后调用 `account/rateLimits/read`，不启动模型回合。只有服务端明确返回 `ordinaryUsageAllowed: true` 才确认恢复；`false` 表示仍阻塞，缺失/null 表示未知。该协议明确禁止在许可缺失时，仅靠额度百分比或重置时间推断恢复。没有可用账号认证、API key/第三方代理不支持该接口时保持未知，不发送继续、不更改登录态。
 
 Claude 使用 `claude -p "Respond with the single word: pong" --no-session-persistence --output-format json`，禁用内置工具、MCP 工具及 hooks。保留正常鉴权环境，不使用会禁用 OAuth 的 `--bare`。只接受退出码 0、成功结果、`is_error: false` 且文本为 pong 的 JSON；429 为仍限流，网络失败、未登录、无效 JSON 或其他响应均为未知。每次探测会产生少量模型 token；超时为 30 秒，不做探测内部自动重试。
 
@@ -66,4 +66,4 @@ Claude 使用 `claude -p "Respond with the single word: pong" --no-session-persi
 
 自动测试覆盖新旧错误共存、正常完成、已有输入、两类中断的三分钟缓冲边界、强制 tick 不绕过缓冲、CLI 自身重试、探测期间变化、五分钟调度、失败不重发、停用及会话隔离。真实 PTY/Tide 集成测试将可配置缓冲缩短到 1 秒，用模拟 CLI 实现 App Server 握手和 Claude JSON 响应，验证两种中断到输入和 Enter 的完整链路，不消耗模型额度。
 
-Windows 本机另验证了真实 Codex App Server 返回明确可用、真实 Codex exec 临时探测返回 pong，以及在用户 Git Bash 环境下真实 Claude 返回 pong。没有人为耗尽真实账号额度，实际限额到数小时后重置的长周期过程尚未实测；macOS 本轮未实机验证。
+Windows 上另验证了真实 Codex App Server 返回明确可用、真实 Codex exec 临时探测返回 pong，以及 Git Bash 环境下真实 Claude 返回 pong。没有人为耗尽真实账号额度，实际限额到数小时后重置的长周期过程尚未实测；macOS 尚未实机验证。

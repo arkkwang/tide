@@ -1,8 +1,30 @@
 {
-  "name": "tide",
+  "name": "@arkkwang/tide",
   "version": "0.1.0",
-  "private": true,
   "description": "Visible interactive shell sessions with text, key and screen access for agents",
+  "license": "MIT",
+  "author": "ArkkWang",
+  "keywords": [
+    "cli",
+    "terminal",
+    "pty",
+    "agent",
+    "shell",
+    "automation",
+    "node-pty",
+    "xterm"
+  ],
+  "homepage": "https://github.com/ArkkWang/tide#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ArkkWang/tide.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ArkkWang/tide/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -23,7 +45,8 @@
     "dist/",
     "examples/",
     "docs/",
-    "README.md"
+    "README.md",
+    "README.en.md"
   ],
   "dependencies": {
     "@xterm/addon-serialize": "0.13.0",

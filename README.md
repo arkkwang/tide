@@ -1,21 +1,42 @@
+[English](README.en.md) | 简体中文
+
 # Tide
 
 为人和 Agent 提供持续运行的交互式 shell：默认在后台创建会话，Agent 可发送输入、读取屏幕；需要人工查看时再用 `attach` 打开终端。Claude Code / Codex 是 shell 中的普通程序，Session ID 标识会话，不是窗口。
 
+## 平台支持
+
+支持 Windows（经 Git Bash）和 macOS，需要 Node 20+；CI 也只跑这两个系统。
+
+- `attach` 和 `launch --attach` 只在 Windows 与 macOS 上实现，其他平台直接报错，不静默降级。
+- Linux 及其他平台未验证。`node-pty` 的预编译产物只覆盖 win32 / darwin，Linux 安装会退回 `node-gyp` 源码编译，能否成功取决于本机构建环境。
+- 终端相关行为只在 Windows Terminal 上验证过；其他终端不保证支持。
+
 ## 快速开始
 
+从 npm 安装（需要 Node 20+）：
+
 ```bash
+npm install -g @arkkwang/tide
+```
+
+从源码安装：
+
+```bash
+git clone https://github.com/ArkkWang/tide.git
+cd tide
 npm install
-npm run build
+npm run link:local   # 构建并注册全局 tide 命令
+```
 
-# Git Bash：在项目根目录定义当前窗口的快捷函数
-tide() { bash /d/workspace/program/personal/tide/bin/tide "$@"; }
+然后创建会话：
 
+```bash
 # 后台创建会话，执行 echo hello，等待并返回会话 ID 和画面
 tide launch --with-command "echo hello" --wait-idle --with-read
 ```
 
-需要全局 `tide` 命令时，在项目目录执行 `npm run link:local`，会先构建再刷新 npm 全局入口。普通代码修改执行 `npm run build` 即可；`package.json` 的 `bin` 改动后必须重新 link，build 不会重建 npm 已生成的启动脚本。尤其从旧的 `dist/tide.mjs` 入口升级时，需要这一步才能启用 Git Bash 文本保护。`npm pack` 前自动构建，包内只包含运行入口、构建产物、示例及文档，不包含本地会话数据。
+`npm run link:local` 会先构建再刷新 npm 全局入口。普通代码修改执行 `npm run build` 即可；`package.json` 的 `bin` 改动后必须重新 link，build 不会重建 npm 已生成的启动脚本。尤其从旧的 `dist/tide.mjs` 入口升级时，需要这一步才能启用 Git Bash 文本保护。`npm pack` 前自动构建，包内只包含运行入口、构建产物、示例及文档，不包含本地会话数据。
 
 默认 `launch` 不创建窗口、不请求输入焦点；`launch --attach` 会为刚创建的会话打开显示端，即 Windows Terminal Tab（Windows）或 Terminal 窗口（macOS），不是当前终端，也不保证操作系统授予前台焦点。`tide attach <id>` 自动打开 Windows Terminal Tab（Windows）或 Terminal 窗口（macOS），接入原来的 shell 和正在执行的程序，不重新执行命令。Windows 使用 `wt -w 0`，在当前虚拟桌面最近使用的窗口新建 Tab；没有窗口时新建窗口。沿用调用端的 `WT_PROFILE_ID`，否则使用用户默认配置。`attach` 返回表示显示端已连接，不保证操作系统已授予前台焦点。
 
@@ -188,63 +209,40 @@ tide resize 5fefa --cols 120 --rows 35 --wait-idle --with-read
 
 `scroll` 的步数默认 3（1..100），不等于文本行数；位置是从 1 开始的屏幕列、行，默认屏幕中央。仅支持前台应用启用的 SGR 单元格鼠标协议，不支持时明确报错，不自动换成方向键。滚动改变用户和 Agent 共享的应用视图；它不是 shell 历史读取接口；长日志查阅应使用文件输出和 Read / grep / rg。
 
-`resize` 要求列数 20..500、行数 5..200。未接入显示端时直接调整 PTY 和屏幕副本；已接入时最多等 3 秒确认外层实际尺寸，PTY 和屏幕副本跟随外层，不强制制造内部尺寸差异。返回 `requested`、`actual`、`applied`，未达到目标时退出码为 3，仍可等待和抓屏。终端不支持、最大化、分屏或屏幕边界可能影响结果；请求超时不代表终端不会稍后处理。用户后续手动拉窗口会继续正常同步。已验证本机 Windows Terminal，其他终端不保证支持。
+`resize` 要求列数 20..500、行数 5..200。未接入显示端时直接调整 PTY 和屏幕副本；已接入时最多等 3 秒确认外层实际尺寸，PTY 和屏幕副本跟随外层，不强制制造内部尺寸差异。返回 `requested`、`actual`、`applied`，未达到目标时退出码为 3，仍可等待和抓屏。终端不支持、最大化、分屏或屏幕边界可能影响结果；请求超时不代表终端不会稍后处理。用户后续手动拉窗口会继续正常同步。已在 Windows Terminal 上验证，其他终端不保证支持。
 
 未经确认的观察：ConPTY 下曾见到 MSYS bash 在尺寸变化后丢掉紧随其后写入的第一个字节，但这是在 tide 之外看到的、无法按需复现，手工 resize 后继续输入也未重现，触发条件不明；遇到时重新输入即可。
 
 ## 启动 profile
 
-`tide launch --profile <label>` 一步完成"起 session + 切 env + 跑命令"，免去先开 bash 查 cwd、再 `ccs`、再 `claude` 的几次往返。配置文件落在 tide 自己的 `.tide/launch-profiles.json`，跟 home-scripts / `ccs` 解耦。
+`tide launch --profile <label>` 一步完成"起 session + 切 env + 跑命令"，免去先开 bash 查 cwd、再切环境、再启动 CLI 的几次往返。配置文件落在 tide 自己的 `.tide/launch-profiles.json`，不依赖外部 shell 配置或别名。
 
 ```json
 {
   "profiles": [
     {
-      "label": "minimax",
-      "description": "MiniMAX via official API",
-      "commands": [
-        "claude --dangerously-skip-permissions"
-      ],
+      "label": "claude-alt",
+      "description": "Claude Code against an alternate Anthropic-compatible endpoint",
+      "commands": ["claude"],
       "env": {
-        "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": "sk-cp-...",
-        "ANTHROPIC_MODEL": "MiniMax-M3[1m]"
+        "ANTHROPIC_BASE_URL": "https://example.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "<token>",
+        "ANTHROPIC_MODEL": "<model-id>"
       }
     },
     {
-      "label": "deepseek-flash",
-      "description": "Deepseek flash",
-      "commands": [
-        "claude --dangerously-skip-permissions"
-      ],
+      "label": "codex-alt",
+      "description": "Codex against an alternate OpenAI-compatible endpoint",
+      "commands": ["codex"],
       "env": {
-        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": "sk-...",
-        "ANTHROPIC_MODEL": "deepseek-flash"
-      }
-    },
-    {
-      "label": "codex-ark",
-      "description": "Codex via 火山方舟",
-      "commands": [
-        "codex --yolo"
-      ],
-      "env": {
-        "OPENAI_BASE_URL": "https://ark.cn-beijing.volces.com/api/coding",
-        "OPENAI_API_KEY": "..."
+        "OPENAI_BASE_URL": "https://example.com/v1",
+        "OPENAI_API_KEY": "<key>"
       }
     },
     {
       "label": "setup-then-run",
-      "description": "先 git pull 再启动 claude,适合早上开工场景",
-      "commands": [
-        "git pull",
-        "claude --dangerously-skip-permissions"
-      ],
-      "env": {
-        "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": "sk-..."
-      }
+      "description": "Pull latest changes, then start the CLI",
+      "commands": ["git pull", "claude"]
     }
   ]
 }
@@ -256,20 +254,20 @@ tide resize 5fefa --cols 120 --rows 35 --wait-idle --with-read
 # 列出可用 profile(label + 描述 + command + commands + env key 数量)
 tide profiles
 
-# 一步: 起新 session + 切到 minimax + cd 进 /d/foo + 启动 claude
-tide launch --profile minimax --cwd /d/foo
+# 一步: 起新 session + 切到 claude-alt + cd 进 /path/to/project + 启动 claude
+tide launch --profile claude-alt --cwd /path/to/project
 
 # 透传额外参数给最后一条命令
-tide launch --profile minimax --cwd /d/foo -- --model claude-sonnet-4-20250514
+tide launch --profile claude-alt --cwd /path/to/project -- --model <model-id>
 
 # 创建会话并打开终端显示端（Windows/macOS）；命令发送后才 attach
-tide launch --profile minimax --cwd /d/foo --attach
+tide launch --profile claude-alt --cwd /path/to/project --attach
 
 # 连续跑 git pull + claude
-tide launch --profile setup-then-run --cwd /d/foo
+tide launch --profile setup-then-run --cwd /path/to/project
 
 # 不带 --profile 时,行为和原来一样 —— 裸起 bash,什么也不发
-tide launch --cwd /d/foo
+tide launch --cwd /path/to/project
 ```
 
 label 规则: 匹配 `[a-zA-Z0-9_-]+`，大小写不敏感，必须唯一。`commands` 是非空字符串数组,每条是一行 shell 命令,会用 shell-quote 规则拆词(单/双引号保留空格,空格切分);按顺序用 `;` 连接,前一条失败不阻塞后一条。`--` 后面的实参会接到最后一条命令上(覆盖式追加)。`--profile` 与 `--with-command` 互斥。launch 完成后 JSON 多了几个 profile 字段:
@@ -278,7 +276,7 @@ label 规则: 匹配 `[a-zA-Z0-9_-]+`，大小写不敏感，必须唯一。`com
 - `command`: 第一条 command 的 argv[0](二进制名,如 `claude`)
 - `commands`: 完整命令列表,每条已 join 成字符串(便于直接看跑了什么)
 
-缺失或非法配置时报错带最小模板，便于新用户上手。配置路径默认 `${TIDE_STATE_DIR}/launch-profiles.json`，可用 `TIDE_LAUNCH_PROFILES=<path>` 覆盖。secret 以明文存放在 JSON 中（与 `.claudecode-config` 一致），按需 `chmod 600`。
+缺失或非法配置时报错带最小模板，便于新用户上手。配置路径默认 `${TIDE_STATE_DIR}/launch-profiles.json`，可用 `TIDE_LAUNCH_PROFILES=<path>` 覆盖。secret 以明文存放在 JSON 中，按需 `chmod 600`。
 
 ## Plugin
 
@@ -330,10 +328,14 @@ npm run typecheck
 npm test
 ```
 
-测试覆盖终端控制序列、组合键、短 ID 歧义、Git Bash 斜杠参数、真实 PTY/shell、纯文本输出、Plugin 检测与生命周期、本地通信和关闭注销。Windows 本机验证；macOS 新窗口和人工交互仍需实机验收，CI 保留 Windows/macOS 矩阵。
+测试覆盖终端控制序列、组合键、短 ID 歧义、Git Bash 斜杠参数、真实 PTY/shell、纯文本输出、Plugin 检测与生命周期、本地通信和关闭注销。Windows 已实机验证；macOS 的窗口行为仍需实机验收，CI 保留 Windows/macOS 矩阵。
 
-2026-09-23 Windows 手动验收还覆盖了：通过 Tide 给 Claude 创建模块的小任务、观察并确认单次文件写入、独立执行产物验收；Node REPL 表达式、历史键和 Ctrl+U；一个会话内调用 Tide 读取/发送到另一个会话；持续刷屏超时与停止后 idle、11 秒长等待、CLI 退出回到同一 shell。入口脚本是 `scripts/acceptance.mjs`，本机结果在 `.tide/acceptance-latest.json`。该执行环境的 shell rc/CLI 历史目录存在权限提示，因此未验证 CLI 自己的历史持久化；终端操作和产物验收不依赖它。
+`scripts/acceptance.mjs` 是手动验收脚本，覆盖自动化测试不便覆盖的路径：经 Tide 驱动 Claude 完成一个小任务并核对产物、Node REPL 表达式与 Ctrl+U、在一个会话内调用 Tide 操作另一个会话、持续刷屏后的超时与 idle、长等待、CLI 退出后回到同一 shell。
 
 旧的 `watch/unwatch/resume/quota/status/snapshot/tail/wait`、CLI 历史扫描和自动恢复实现已移除。`tide send` 现在表示终端文本输入，旧的 `--cli/--message/--mode` 用法不再适用。旧配置/历史状态不会导入新会话，新核心不读取它们；升级前已运行的旧版本进程需结束，新版本不会接管它们。
 
 本地运行数据位于 `TIDE_STATE_DIR`（默认安装目录旁 `.tide`）：`sessions/` 保存当前宿主的私有登记，`terminal-launches/` 保存一次性启动交接，`session-logs/` 保存后台宿主诊断；除 `tide plugin enable/disable` 改写 `.tide/plugins.json` 外，不写 CLI 的历史或配置。异常终止留下的失效登记会在确认端点不存在后清理，无法确认的端点会报错，避免错误消除短 ID 歧义。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。
