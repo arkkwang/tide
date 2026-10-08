@@ -4,3 +4,6 @@ dist/
 
 # local runtime state (never commit: contains session ids and account info)
 .tide/
+
+# Playwright MCP artifacts
+.playwright-mcp/
