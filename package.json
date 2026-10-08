@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Visible interactive shell sessions with text, key and screen access for agents",
   "license": "MIT",
-  "author": "ArkkWang",
+  "author": "arkkwang",
   "keywords": [
     "cli",
     "terminal",
@@ -14,13 +14,13 @@
     "node-pty",
     "xterm"
   ],
-  "homepage": "https://github.com/ArkkWang/tide#readme",
+  "homepage": "https://github.com/arkkwang/tide#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ArkkWang/tide.git"
+    "url": "git+https://github.com/arkkwang/tide.git"
   },
   "bugs": {
-    "url": "https://github.com/ArkkWang/tide/issues"
+    "url": "https://github.com/arkkwang/tide/issues"
   },
   "publishConfig": {
     "access": "public"

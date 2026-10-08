@@ -23,7 +23,7 @@ npm install -g @arkkwang/tide
 从源码安装：
 
 ```bash
-git clone https://github.com/ArkkWang/tide.git
+git clone https://github.com/arkkwang/tide.git
 cd tide
 npm install
 npm run link:local   # 构建并注册全局 tide 命令

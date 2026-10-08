@@ -25,7 +25,7 @@ npm install -g @arkkwang/tide
 From source:
 
 ```bash
-git clone https://github.com/ArkkWang/tide.git
+git clone https://github.com/arkkwang/tide.git
 cd tide
 npm install
 npm run link:local   # build, then register the global tide command
