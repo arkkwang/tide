@@ -32,8 +32,8 @@ export function windowsTerminalProfile(env: NodeJS.ProcessEnv = process.env): st
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
       const profile = defaultProfile(text);
       if (profile) return profile;
-      throw Error(`Cannot read defaultProfile from ${path}; launch Tide from your preferred Windows Terminal profile, or use tide run`);
+      throw Error(`Cannot read defaultProfile from ${path}; launch Tide from your preferred Windows Terminal profile, or use tide launch without --attach`);
     }
   }
-  throw Error("Cannot locate Windows Terminal settings; launch Tide from your preferred Windows Terminal profile, or use tide run");
+  throw Error("Cannot locate Windows Terminal settings; launch Tide from your preferred Windows Terminal profile, or use tide launch without --attach");
 }

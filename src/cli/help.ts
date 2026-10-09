@@ -15,21 +15,20 @@ const shellOptions = `  --shell executable  Override TIDE_SHELL / SHELL / platfo
 // One definition supplies both the overview and each command's local expansion.
 const commands: Record<string, { usage: string[]; summary: string; details?: string }> = {
   launch: {
-    usage: ['launch [--shell executable] [--cwd directory] [--with-command text | --profile label] [--attach]'],
+    usage: ['launch [--shell executable] [--cwd directory] [--with-command text] [--attach]'],
     summary: 'Start a background shell session (no window unless --attach); return its Tide ID.',
     details: `${shellOptions}
   --with-command text  Send a single-line command followed by Enter.
-  --profile label      Run a saved profile; exclusive with --with-command.
-  -- args...           Shell arguments, or arguments for the profile's last command.
+  -- args...           Shell arguments.
   --attach             Open a terminal display for this new session. Windows/macOS
                        only, and not the current terminal (no focus guarantee): Windows Terminal
                        tab / macOS Terminal window. Attach happens after command submission,
                        before --wait-idle/--with-read. Closing the display leaves the session running.
                        Attach failure skips observation and does not close the session; retry
                        tide attach <id>. Put --attach before the -- argument delimiter.
-  Command/profile startup waits for 3 quiet seconds (30-second limit).
+  Command startup waits for 3 quiet seconds (30-second limit).
   Startup timeout sends nothing; later failures may have delivered input.
-  Observation options require --with-command or --profile:
+  Observation options require --with-command:
 ${observation}`,
   },
   attach: {
@@ -37,18 +36,13 @@ ${observation}`,
     summary: 'Open a Windows Terminal tab / macOS Terminal window for an existing session.',
     details: '  One display per session; an attached or opening display rejects another attach.\n  Closing this display disconnects it without ending the session.',
   },
-  run: {
-    usage: ['run [--shell executable] [--cwd directory] [-- shell-args...]'],
-    summary: 'Create a background session and attach this real TTY; exit code follows the shell.',
-    details: `${shellOptions}\n  Closing the terminal disconnects the display; the session keeps running.`,
-  },
   list: {
     usage: ['list'],
-    summary: 'List live Tide sessions as JSON, including lastCommand (null when unknown), idleForMs and promptState.',
+    summary: 'List live sessions as JSON: id, cwd (initial directory), lastCommand (null when unknown), display, promptState, shell, createdAt, idleForMs.',
   },
   info: {
     usage: ['info <id>'],
-    summary: 'Return shell metadata, lastCommand and promptState as JSON, not semantic task status.',
+    summary: 'Return one session with the same fields as list: id, cwd (initial directory), lastCommand, display, promptState, shell, createdAt, idleForMs; not semantic task status.',
   },
   send: {
     usage: ['send <id> <text> [--with-enter]', 'send <id> --stdin [--with-enter]', 'send <id> --key <key> [keys...]'],
@@ -104,19 +98,13 @@ ${observation}`,
     usage: ['close <id> | close --all | close --idle'],
     summary: 'Terminate the hosted shell/session, including ongoing work; --all targets this TIDE_STATE_DIR, --idle closes only sessions waiting at a bash prompt with no display attached, the two flags are mutually exclusive and take no ID, and both return per-session results (untouched sessions report skipped: attached | command-running | prompt-unknown; exit 1 on any failure).',
   },
-  profiles: {
-    usage: ['profiles'],
-    summary: 'List saved launch profiles as JSON.',
-    details: '  Source: TIDE_STATE_DIR/launch-profiles.json; override with TIDE_LAUNCH_PROFILES.',
-  },
   plugin: {
-    usage: ['plugin list | status <id>', 'plugin enable|disable <name|path>'],
+    usage: ['plugin list | status <id>', 'plugin enable|disable <path>'],
     summary: 'List plugins, inspect session plugins or change the registry.',
     details: `  Registry changes apply to NEW sessions. Enable loads and validates local code
   with your privileges; disable removes a configured entry.
   tide <plugin-id> --help lists plugin commands; commands marked * accept --all.
-  Recovery plugins cxr/ccr are off until watch; recovery can send input and probes
-  consume tokens. Details: docs/plugins.md and docs/resume-plugins.md.`,
+  Local module paths resolve relative to plugins.json. Details: docs/plugins.md.`,
   },
 };
 
@@ -141,7 +129,7 @@ ${Object.values(commands).map(command => command.usage.map(usage => `  ${usage}`
     Run or list plugin-specific commands.
 
   launch/send/scroll/resize also accept --wait-idle [--idle-time N] [--timeout N]
-  and --with-read [--full | --lines N]. Launch requires --with-command/--profile.
+  and --with-read [--full | --lines N]. Launch requires --with-command.
   launch --attach opens a terminal display for the new session (Windows/macOS).
   wait-idle --with-read also accepts --full | --lines N.
 

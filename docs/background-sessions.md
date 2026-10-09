@@ -4,7 +4,6 @@
 
 - `launch`：后台创建 PTY/shell，返回 Session ID，默认不打开终端窗口。加 `--attach` 时为刚创建的会话打开显示端（与 `attach` 相同：Windows Terminal Tab / macOS Terminal 窗口，不是当前终端，不保证前台焦点）。
 - `attach <id>`：Windows 打开 WT Tab，macOS 打开 Terminal 显示端，接入同一会话；不重启程序。
-- `run`：创建后台会话，并把当前真实终端作为显示端。
 - `send/read/wait-idle`：不依赖显示端，不操作桌面焦点。
 - 关闭显示端：断开显示，后台会话继续。`close` 或 shell 退出才结束会话。
 - 同一会话最多一个显示端，重复接入直接拒绝；不定位旧 Tab，也没有强制替换参数。

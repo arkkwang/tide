@@ -56,7 +56,7 @@ tide close 5fefa
 
 例子中的 `5fefa` 替换成 `launch` 或 `tide list` 返回的实际 ID 前缀。所有接收 Session ID 的命令都支持无歧义前缀，完整 ID 精确匹配优先；有多个候选就列出并拒绝执行。复用已有会话时，先 `tide list`，再 `tide read <id>` 确认当前提示符。已拿到最新的组合操作 `read` 时可直接据此判断下一步，无需再抓一次屏。
 
-`tide run` 创建后台会话并接入当前终端，不另开窗口；关闭该终端同样只断开显示。启动文件需要交互或必须先检查启动画面时，使用不带命令的 `tide launch`，随后 `tide wait-idle <id> --with-read`。
+启动文件需要交互或必须先检查启动画面时，使用不带命令的 `tide launch`，随后 `tide wait-idle <id> --with-read`。
 
 常用路径（先确认当前画面再输入）：
 
@@ -81,9 +81,11 @@ tide close 5fefa
 
 **频繁抓取长输出或滚屏查历史，通常意味着该换一种工具使用方式。** Tide 主要用于与可见的交互式终端协作、检查当前画面和处理输入提示。对于构建日志、测试结果、批量命令输出等，优先使用 Bash / Shell 执行工具或其他适合的工具，将输出重定向到文件，再用 Read 按需读取，或用 grep / rg 搜索。例如在 Bash 中执行 `your-command > output.log 2>&1`，再执行 `rg -n 'error|failed' output.log`。需要同时在终端查看时可用 `tee`。`--lines` 和 `scroll` 用于偶尔补看上下文或操作 TUI；支持这些能力，不代表推荐把反复抓屏、滚屏当作日志分析流程。
 
+`list` 返回会话信息数组，`info <id>` 返回其中一个会话的信息对象，两者字段一致：`id`、`cwd`、`lastCommand`、`display`、`promptState`、`shell`、`createdAt`、`idleForMs`。`cwd` 是启动目录，不随 shell 内的 `cd` 更新；`shell` 是启动的 shell 路径，`createdAt` 是会话创建时间。两者不再输出 PID、退出状态或最后输出时间；其他命令与内部会话信息不变。
+
 `list` 和 `info` 返回 `lastCommand`：最近一次识别到开始执行的 shell 命令（例如 `"claude --resume"`），结束后保留，下一条命令开始时更新；未提交的输入、程序输出和 TUI 聊天不更新它。复用 Bash 4.4+ 的提示符结束/执行边界，从终端回显提取命令，不扫描历史、不额外保存到磁盘。支持单行命令的屏幕自动折行；多行输入、未识别的 shell 或丢失输入边界时为 `null`。清屏和调整窗口不会删除已记录的命令，但可能影响下一次识别。它不是当前进程名或可信执行审计，命令中的敏感参数也可能显示出来。旧宿主没有此字段，需新开会话。
 
-`list` 和 `info` 还返回实时活动信息：`idleForMs` 是当前画面持续未变化的毫秒数；`lastOutputAt` 是最后收到 PTY 输出的 UTC ISO 时间，尚无输出时为 `null`。文本、尺寸或活动缓冲区变化会重置 idle，重复重绘、颜色、标题和光标变化不会，但任何非空输出都会更新 `lastOutputAt`。无输出时 idle 从屏幕初始化开始计时，查询和抓屏不重置计时。可先用 `list` 筛选长时间安静的会话，再抓屏判断；这些字段不表示任务完成、故障或需要介入。旧宿主可能不包含这两个字段，新开会话后生效。
+`idleForMs` 是当前画面持续未变化的毫秒数。文本、尺寸或活动缓冲区变化会重置 idle，重复重绘、颜色、标题和光标变化不会。无输出时从屏幕初始化开始计时，查询和抓屏不重置计时。可据此筛选长时间安静的会话，再抓屏判断；它不表示任务完成、故障或需要介入。旧宿主可能没有该字段，需新开会话。
 
 同时返回 `promptState`：`at-prompt` 表示最近一次 bash 提示符边界（OSC 133 `A`/`B`）之后没有看到命令提交（`C`），`running` 表示最近看到的是命令提交，`unknown` 表示从未看到边界（非 bash shell，或启动文件覆盖了提示符集成）。它只描述屏幕上可见的提示符/执行边界：等待输入的前台程序（`cat`、需要确认的脚本）算 `running`，不区分任务是否完成，也不代表可以安全结束。清屏和 resize 不改变它，下一条提示符会恢复追踪。前台程序自己输出这些转义序列时同样会影响判断。旧宿主没有此字段，需新开会话。
 
@@ -101,12 +103,10 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 
 | 命令 | 行为 |
 | --- | --- |
-| `run [--shell executable] [--cwd directory] [-- shell-args...]` | 创建后台会话并接入当前终端 |
-| `launch [--shell executable] [--cwd directory] [--with-command text \| --profile label] [--attach] [--wait-idle] [--with-read] [-- shell-args... \| -- <bin-args...>]` | 创建后台会话（默认无窗口），bash 提示符带 `T<短 ID>`；可自动发送命令、Enter、打开显示端，并等待和返回画面 |
+| `launch [--shell executable] [--cwd directory] [--with-command text] [--attach] [--wait-idle] [--with-read] [-- shell-args...]` | 创建后台会话（默认无窗口），bash 提示符带 `T<短 ID>`；可自动发送命令、Enter、打开显示端，并等待和返回画面 |
 | `attach <id>` | 自动打开终端，接入原会话；关闭终端不结束会话 |
-| `profiles` | 列出 `.tide/launch-profiles.json` 里的 label、描述、env key 数量 |
 | `list` | 列出本机当前托管的 shell 会话及最近执行的 `lastCommand`，不扫描 CLI 历史 |
-| `info <id>` | 返回 Tide ID、PID、shell、目录等进程信息 |
+| `info <id>` | 按 ID 返回与 `list` 相同的会话信息 |
 | `send <id> <text>` | 写入文本；加 `--with-enter` 在文本后发送回车 |
 | `send <id> --stdin` | 从管道读取 UTF-8 原文，适合长文本与多行 |
 | `send <id> --key <key> [keys...]` | 顺序发送具名按键或组合键 |
@@ -116,9 +116,9 @@ Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参�
 | `wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-read]` | 等待画面连续不变，或到达超时，可同时返回画面 |
 | `close <id>` / `close --all` / `close --idle` | 结束指定会话、当前 `TIDE_STATE_DIR` 下的全部会话，或停在 bash 提示符前的会话，包括正在执行的任务；不是 CLI 回合打断 |
 | `plugin list` | 列出 Tide 知道的插件及启用状态，不访问会话 |
-| `plugin enable <名称\|路径>` / `plugin disable <名称\|路径>` | 改写 `.tide/plugins.json` 的插件列表，只对之后启动的会话生效 |
+| `plugin enable <路径>` / `plugin disable <路径>` | 改写 `.tide/plugins.json` 的插件列表，只对之后启动的会话生效 |
 | `plugin status <id>` | 查看该会话的插件匹配结果、命令和插件错误 |
-| `<plugin-id> <command> <id> [args...]` | 调用插件自己的命令，例如 `ccr status <id>`；`all` 命令可用 `--all` 顶替 id，返回每个匹配会话一条结果 |
+| `<plugin-id> <command> <id> [args...]` | 调用插件自己的命令，例如 `screen contains <id> 'ready'`；`all` 命令可用 `--all` 顶替 id，返回每个匹配会话一条结果 |
 
 默认输出 JSON。`read --plain-text` 只打印快照里的文本，保留空格、换行及省略提示，无 JSON 和颜色转义；输出区域比原窗口窄时，外层终端仍可能自动折行。
 
@@ -217,94 +217,30 @@ tide resize 5fefa --cols 120 --rows 35 --wait-idle --with-read
 
 未经确认的观察：ConPTY 下曾见到 MSYS bash 在尺寸变化后丢掉紧随其后写入的第一个字节，但这是在 tide 之外看到的、无法按需复现，手工 resize 后继续输入也未重现，触发条件不明；遇到时重新输入即可。
 
-## 启动 profile
-
-`tide launch --profile <label>` 一步完成"起 session + 切 env + 跑命令"，免去先开 bash 查 cwd、再切环境、再启动 CLI 的几次往返。配置文件落在 tide 自己的 `.tide/launch-profiles.json`，不依赖外部 shell 配置或别名。
-
-```json
-{
-  "profiles": [
-    {
-      "label": "claude-alt",
-      "description": "Claude Code against an alternate Anthropic-compatible endpoint",
-      "commands": ["claude"],
-      "env": {
-        "ANTHROPIC_BASE_URL": "https://example.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": "<token>",
-        "ANTHROPIC_MODEL": "<model-id>"
-      }
-    },
-    {
-      "label": "codex-alt",
-      "description": "Codex against an alternate OpenAI-compatible endpoint",
-      "commands": ["codex"],
-      "env": {
-        "OPENAI_BASE_URL": "https://example.com/v1",
-        "OPENAI_API_KEY": "<key>"
-      }
-    },
-    {
-      "label": "setup-then-run",
-      "description": "Pull latest changes, then start the CLI",
-      "commands": ["git pull", "claude"]
-    }
-  ]
-}
-```
-
-常用命令：
-
-```bash
-# 列出可用 profile(label + 描述 + command + commands + env key 数量)
-tide profiles
-
-# 一步: 起新 session + 切到 claude-alt + cd 进 /path/to/project + 启动 claude
-tide launch --profile claude-alt --cwd /path/to/project
-
-# 透传额外参数给最后一条命令
-tide launch --profile claude-alt --cwd /path/to/project -- --model <model-id>
-
-# 创建会话并打开终端显示端（Windows/macOS）；命令发送后才 attach
-tide launch --profile claude-alt --cwd /path/to/project --attach
-
-# 连续跑 git pull + claude
-tide launch --profile setup-then-run --cwd /path/to/project
-
-# 不带 --profile 时,行为和原来一样 —— 裸起 bash,什么也不发
-tide launch --cwd /path/to/project
-```
-
-label 规则: 匹配 `[a-zA-Z0-9_-]+`，大小写不敏感，必须唯一。`commands` 是非空字符串数组,每条是一行 shell 命令,会用 shell-quote 规则拆词(单/双引号保留空格,空格切分);按顺序用 `;` 连接,前一条失败不阻塞后一条。`--` 后面的实参会接到最后一条命令上(覆盖式追加)。`--profile` 与 `--with-command` 互斥。launch 完成后 JSON 多了几个 profile 字段:
-- `profile`: 选中的 label
-- `index`: profile 在配置数组里的位置
-- `command`: 第一条 command 的 argv[0](二进制名,如 `claude`)
-- `commands`: 完整命令列表,每条已 join 成字符串(便于直接看跑了什么)
-
-缺失或非法配置时报错带最小模板，便于新用户上手。配置路径默认 `${TIDE_STATE_DIR}/launch-profiles.json`，可用 `TIDE_LAUNCH_PROFILES=<path>` 覆盖。secret 以明文存放在 JSON 中，按需 `chmod 600`。
-
 ## Plugin
 
-通过 `.tide/plugins.json` 显式加载插件。每个插件声明 `id`（寻址命名空间，全局唯一）、`name`（展示名）和 `commands`（它自己的命令），另提供 `detect`、可选 `start` 和输出变化订阅。插件命令按 `tide <插件 ID> <命令> <会话 ID> [参数...]` 调用，不占用核心命令名；CLI 只解析命名空间并路由到该会话的宿主，插件代码在宿主里运行。声明 `all: true` 的命令可用 `--all` 顶替会话 ID，CLI 对每个匹配会话各跑一次并返回 `[{id, result}]`；汇总发生在 CLI，状态仍只存在于各会话的宿主里。插件 ID 不能与核心命令同名：CLI 先派发核心命令，同名插件永远调不到，所以读取配置时（启动会话、`tide plugin list`、`tide plugin enable`）直接报错，不会加载。恢复插件复用同一套 `send`、`sendKey`，不使用独立投递路径。
+通过 `.tide/plugins.json` 显式加载插件。每个插件声明 `id`（寻址命名空间，全局唯一）、`name`（展示名）和 `commands`（它自己的命令），另提供 `detect`、可选 `start` 和输出变化订阅。插件命令按 `tide <插件 ID> <命令> <会话 ID> [参数...]` 调用，不占用核心命令名；CLI 只解析命名空间并路由到该会话的宿主，插件代码在宿主里运行。声明 `all: true` 的命令可用 `--all` 顶替会话 ID，CLI 对每个匹配会话各跑一次并返回 `[{id, result}]`；汇总发生在 CLI，状态仍只存在于各会话的宿主里。插件 ID 不能与核心命令同名：CLI 先派发核心命令，同名插件永远调不到，所以读取配置时（启动会话、`tide plugin list`、`tide plugin enable`）直接报错，不会加载。插件复用同一套 `send`、`sendKey`，不使用独立投递路径。
 
-[插件契约和示例](docs/plugins.md)。内置可选的 `cxr`(Codex)、`ccr`(Claude Code)，用 `tide plugin enable ccr` 启用（直接改 `.tide/plugins.json` 等价），重开会话生效：
+[插件契约和示例](docs/plugins.md)。保留本地模块插件机制，不再内置应用恢复插件。配置路径相对于 `plugins.json` 所在目录：
 
 ```json
-{"plugins":["cxr","ccr"]}
+{"plugins":["../examples/screen-plugin.mjs"]}
 ```
 
 ```bash
-tide plugin list          # 全部插件及启用状态
-tide plugin status 5fefa  # 该会话里哪些插件生效
-tide ccr --help           # ccr 自己的命令
-tide ccr status --all     # 所有匹配会话的状态
-tide ccr status 5fefa
-tide ccr watch 5fefa      # 开始监听该会话
-tide ccr unwatch 5fefa
+tide plugin list
+tide plugin status 5fefa
+tide screen --help
+tide screen contains 5fefa 'ready'
 ```
 
-恢复插件支持限额和 API 连接中断；只处理最新响应明确中断且输入框为空的窗口。最终错误画面默认需连续稳定 3 分钟，CLI 仍在重试、出现新回复或用户输入时不会接管。Codex 额度通过 App Server 查询，网络中断用 `codex exec --ephemeral` 独立探测；Claude 用 `claude -p` JSON ping/pong 探测。确认成功后才向原窗口发送继续，未恢复时每 5 分钟重查。插件默认不监听会话，配置只表示加载插件进程，`watch` 才开始观察和计时。`status` 只读，不触发探测或发送。配置、限制和验证范围见 [中断恢复插件](docs/resume-plugins.md)。
+原 `ccr` / `cxr` 的历史源码及配置迁移见[已移除的恢复插件](docs/resume-plugins.md)。
 
 ## 验证与迁移
+
+`run` 已移除。使用 `launch` 创建后台会话，需要人工交互时用 `attach <id>` 或 `launch --attach` 打开显示端；不再提供接入当前终端的公开入口。
+
+启动 profile（`profiles`、`launch --profile`、`TIDE_LAUNCH_PROFILES`）已移除。环境变量由调用方设置并继承，命令组合交给脚本；使用 `--cwd` 和 `--with-command` 启动。旧 `launch-profiles.json` 不再读取，也不会自动删除；其中可能含密钥，请自行妥善处理。
 
 源码按职责组织：
 
@@ -313,12 +249,8 @@ src/
   cli/                      命令解析与帮助
   session/                  会话宿主、启动、登记与 IPC
   terminal/                 屏幕渲染、按键、shell 与 idle 检测
-  profile-config/           启动 profile 加载、校验、shell 命令生成
   plugins/
     runtime.ts              插件契约、加载与生命周期
-    codex-resume/           Codex 探测与恢复入口
-    claude-code-resume/     Claude Code 探测与恢复入口
-    recovery/               共用恢复流程、画面识别与探测进程
 tests/
   unit/                     单元测试
   integration/              真实 PTY 与会话集成测试

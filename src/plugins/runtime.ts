@@ -5,8 +5,6 @@ import { errorMessage, type SessionInfo, type Snapshot } from "../session/types.
 // A plugin id is a CLI namespace, so the names it must avoid are the CLI's
 // command names. help.ts imports nothing, so this direction adds no cycle.
 import { isReservedName } from "../cli/help.js";
-import { createCodexResume } from "./codex-resume/index.js";
-import { createClaudeResume } from "./claude-code-resume/index.js";
 
 export interface ObserveContext {
   session: Readonly<SessionInfo>;
@@ -45,9 +43,6 @@ export interface TidePlugin {
   start?(context: PluginContext): void | (() => void) | Promise<void | (() => void)>;
 }
 
-// Bundled plugins, selectable by these names in plugins.json. The selector is
-// only a configuration key; each plugin carries its own id and display name.
-const BUNDLED: Record<string, () => TidePlugin> = { cxr: createCodexResume, ccr: createClaudeResume };
 const PLUGIN_IDENTIFIER = /^[a-z][a-z0-9-]*$/;
 
 export interface PluginSummary { id: string; name: string; source: string; enabled: boolean }
@@ -73,19 +68,21 @@ function pluginConfig(file: string): { selectors: string[]; config: Record<strin
   if (!existsSync(file)) return { selectors: [], config: {} };
   const config = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
   const selectors = config.plugins;
-  if (!Array.isArray(selectors) || !selectors.every((p) => typeof p === "string")) throw Error(`${file}: plugins must be an array of bundled plugin names or explicit local module paths`);
+  if (!Array.isArray(selectors) || !selectors.every((p) => typeof p === "string")) throw Error(`${file}: plugins must be an array of local module paths`);
   return { selectors: selectors as string[], config };
 }
 
-// Loads one selector: a bundled name, or a module path resolved against the
-// configuration file's directory. Validation happens here, so every caller —
-// session start, plugin list, plugin enable — applies the same rules.
+// Module paths are resolved against the configuration file's directory.
 async function loadSelector(file: string, selector: string): Promise<{ plugin: TidePlugin; source: string }> {
-  const create = BUNDLED[selector];
   const path = resolve(dirname(file), selector);
-  if (!create && !existsSync(path)) throw Error(`Unknown plugin: ${selector}; use a bundled name (${Object.keys(BUNDLED).join(", ")}) or an existing module path`);
-  const plugin: TidePlugin = create ? create() : (await import(pathToFileURL(path).href)).default;
-  return { plugin: validated(plugin, selector), source: create ? "bundled" : selector };
+  if (!existsSync(path)) {
+    const hint = ["ccr", "cxr"].includes(selector)
+      ? "Former built-ins ccr/cxr were removed; remove their entries from plugins.json. See docs/resume-plugins.md for historical sources."
+      : "Use an existing local module path.";
+    throw Error(`Unknown plugin: ${selector}; ${hint}`);
+  }
+  const plugin: TidePlugin = (await import(pathToFileURL(path).href)).default;
+  return { plugin: validated(plugin, selector), source: selector };
 }
 
 async function configured(file: string): Promise<Array<{ plugin: TidePlugin; source: string }>> {
@@ -105,7 +102,7 @@ export async function loadPlugins(state: string): Promise<TidePlugin[]> {
 }
 
 // `tide plugin enable/disable`: the only core command that writes configuration.
-// `selector` is exactly the string plugins.json stores — a bundled name or a
+// `selector` is exactly the string plugins.json stores — a
 // module path resolved against the file's directory. Enabling loads the module
 // and validates it first, so the file never gains a plugin that cannot load.
 // A host loads its plugins at launch, so this affects sessions started later.
@@ -124,16 +121,9 @@ export async function setPluginEnabled(state: string, selector: string, enabled:
   return file;
 }
 
-// Registry view for `tide plugin list`: every plugin Tide can run, in
-// configuration order, followed by bundled plugins that are switched off.
+// Only explicitly configured local modules are listed; there is no catalog.
 export async function pluginList(state: string): Promise<PluginSummary[]> {
-  const on = await configured(join(state, "plugins.json"));
-  const enabled = new Set(on.map(({ plugin }) => plugin.id));
-  const off = Object.values(BUNDLED).map((create) => create()).filter((plugin) => !enabled.has(plugin.id));
-  return [
-    ...on.map(({ plugin, source }) => ({ id: plugin.id, name: plugin.name, source, enabled: true })),
-    ...off.map((plugin) => ({ id: plugin.id, name: plugin.name, source: "bundled", enabled: false })),
-  ];
+  return (await configured(join(state, "plugins.json"))).map(({ plugin, source }) => ({ id: plugin.id, name: plugin.name, source, enabled: true }));
 }
 
 export class Plugins {

@@ -3,7 +3,7 @@ import xterm from '@xterm/headless';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// Supply the existing-terminal side of a real `tide run` during integration tests.
+// Emulate a terminal for the test-only launch/view fixture, without a desktop window.
 const child = pty.spawn(process.execPath, process.argv.slice(2), {
   cols: 100, rows: 30, cwd: process.cwd(), env: { ...process.env, TERM: 'xterm-256color' },
 });

@@ -6,7 +6,7 @@ import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const node = process.env.TIDE_TEST_NODE ?? process.execPath;
-const child = pty.spawn(node, [resolve('dist/tide.mjs'), 'run', '--shell', node, '--', '--import', 'tsx', resolve('tests/fixtures/mouse-input.mjs')], {
+const child = pty.spawn(node, ['--import', 'tsx', resolve('tests/fixtures/launch-view.ts'), resolve('dist/tide.mjs'), '--shell', node, '--', '--import', 'tsx', resolve('tests/fixtures/mouse-input.mjs')], {
   cols: 100, rows: 30, cwd: process.cwd(), env: process.env,
 });
 const screen = new xterm.Terminal({ cols: 100, rows: 30 });

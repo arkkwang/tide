@@ -6,7 +6,6 @@ import { closeAllSessions, closeIdleSessions, liveSessions, requestSession } fro
 import { stateDirectory } from "../session/registry.js";
 import { errorMessage, type SessionInfo, type ShellOptions, type Snapshot, type IdleResult } from "../session/types.js";
 import { validateSize } from "../terminal/resize.js";
-import { buildLaunchShellCommand, findProfile, loadProfiles, type ProfileEntry } from "../profile-config/index.js";
 import { loadPlugins, pluginList, setPluginEnabled, type TidePlugin } from "../plugins/runtime.js";
 
 import { commandHelp, help } from "./help.js";
@@ -25,20 +24,10 @@ function shellOptions(args: string[]): ShellOptions {
   return options;
 }
 
-type AugmentedSession = SessionInfo & { profile?: string; index?: number; command?: string; commands?: string[] };
-
-// Adds profile identity fields for JSON output. `command` (the binary name)
-// is omitted when the first command's argv is empty; this is only possible
-// when a profile's commands array is malformed, since loadProfiles rejects it.
-function augmentedSession(info: SessionInfo, profile: ProfileEntry): AugmentedSession {
-  const first = profile.commands[0]?.[0];
-  return {
-    ...info,
-    profile: profile.label,
-    index: profile.index,
-    commands: profile.commands.map((argv) => argv.join(" ")),
-    ...(first === undefined ? {} : { command: first }),
-  };
+// Public queries share an allowlist; internal RPC metadata stays unchanged.
+function sessionSummary(info: SessionInfo) {
+  const { id, cwd, lastCommand, display, promptState, shell, createdAt, idleForMs } = info;
+  return { id, cwd, lastCommand, display, promptState, shell, createdAt, idleForMs };
 }
 
 function expectCount(args: string[], minimum: number, maximum = minimum) {
@@ -110,47 +99,20 @@ async function main() {
   if (!Object.hasOwn(commandHelp, command)) { await pluginCommand(command, args); return; }
   if (args.length === 1 && ["--help", "-h"].includes(args[0]!)) { console.log(help(command)); return; }
 
-  if (command === "run") {
-    const options = shellOptions(args);
-    if (!process.stdin.isTTY || !process.stdout.isTTY) throw Error("tide run needs an interactive terminal; use tide launch for a background session");
-    const session = await launchSession(options);
-    console.error(`[tide] ${session.id}`);
-    const { ticket } = await requestSession<{ ticket: string }>(session.id, { command: "attach-reserve" });
-    try { process.exitCode = await viewSession(session.id, stateDirectory(), ticket); }
-    finally { await requestSession(session.id, { command: "attach-cancel", ticket }).catch(() => {}); }
-    return;
-  }
   if (command === "launch") {
     const shellArgs: string[] = [], observation: string[] = [];
     let text: string | undefined;
-    let profile: ProfileEntry | undefined;
-    let binArgs: string[] = [];
     let attach = false;
-    const profileCache = (process.env.TIDE_LAUNCH_PROFILES || args.some((arg) => arg === "--profile"))
-      ? loadProfiles(stateDirectory())
-      : { path: "", profiles: [] };
     for (let i = 0; i < args.length; i++) {
       const arg = args[i]!;
       if (arg === "--") {
-        if (profile) binArgs = args.slice(i + 1);
-        else shellArgs.push(...args.slice(i));
+        shellArgs.push(...args.slice(i));
         break;
       }
       if (arg === "--with-command") {
         if (text !== undefined) throw Error("--with-command may only be supplied once");
-        if (profile !== undefined) throw Error("--with-command cannot combine with --profile");
         text = args[++i];
         if (!text?.trim() || text.startsWith("--")) throw Error("--with-command needs a command");
-      } else if (arg === "--profile") {
-        if (profile !== undefined) throw Error("--profile may only be supplied once");
-        if (text !== undefined) throw Error("--profile cannot combine with --with-command");
-        const label = args[++i];
-        if (!label || label.startsWith("--")) throw Error("--profile needs a label");
-        profile = findProfile(profileCache.profiles, label) ?? undefined;
-        if (!profile) {
-          const list = profileCache.profiles.map((p) => `  ${p.index}. ${p.label}${p.description ? ` — ${p.description}` : ""}`).join("\n");
-          throw Error(`Unknown profile: ${label}\nLoaded from ${profileCache.path}\nAvailable:\n${list}`);
-        }
       } else if (arg === "--attach") {
         if (attach) throw Error("--attach may only be supplied once");
         attach = true;
@@ -164,11 +126,7 @@ async function main() {
     }
     const shell = shellOptions(shellArgs);
     const options = afterSendOptions(observation);
-    if (profile) {
-      const cwd = shell.cwd;
-      text = buildLaunchShellCommand(profile, profileCache.profiles, binArgs, cwd);
-    }
-    if (text === undefined && observation.length) throw Error("Launch observation options require --with-command or --profile");
+    if (text === undefined && observation.length) throw Error("Launch observation options require --with-command");
     if (text !== undefined && /[\x00-\x1f\x7f-\x9f]/.test(text)) throw Error("--with-command requires a single line without control characters");
     // Reject unsupported platforms before creating the session.
     if (attach) assertAttachSupported();
@@ -180,27 +138,17 @@ async function main() {
       if ("error" in attached) { console.error(`Attach failed; session ${launched.id} was not closed; retry with: tide attach ${launched.id}: ${attached.error.message}`); process.exitCode = 1; }
       return;
     }
-    const launchedForPrint = profile ? augmentedSession(launched, profile) : launched;
     let stage = "startup";
     try {
       const startup = await requestSession<IdleResult>(launched.id, { command: "wait-idle", idleTime: 3, timeout: 30 });
       if (!startup.idle) throw Error("Startup screen did not settle within 30 seconds; command was not sent");
       stage = "send";
-      await sendAndObserve(launched.id, { command: "send", text }, { ...options, enter: true, attach }, launchedForPrint);
+      await sendAndObserve(launched.id, { command: "send", text }, { ...options, enter: true, attach }, launched);
     } catch (error) {
-      print({ ...launchedForPrint, error: { stage, message: errorMessage(error) } });
+      print({ ...launched, error: { stage, message: errorMessage(error) } });
       console.error("Session was launched; " + stage + " failed. Inspect this session before retrying: " + errorMessage(error));
       process.exitCode = 1;
     }
-    return;
-  }
-  if (command === "profiles") {
-    expectCount(args, 0);
-    const loaded = loadProfiles(stateDirectory());
-    print({
-      path: loaded.path,
-      profiles: loaded.profiles.map((p) => ({ index: p.index, label: p.label, description: p.description, command: p.commands[0]?.[0], commands: p.commands.map((argv) => argv.join(" ")), envKeyCount: Object.keys(p.env).length })),
-    });
     return;
   }
   if (command === "plugin") {
@@ -209,7 +157,7 @@ async function main() {
     if (action === "list") { expectCount(rest, 0); print(await pluginList(stateDirectory())); return; }
     if (action === "enable" || action === "disable") {
       const [selector, ...extra] = rest;
-      if (!selector) throw Error(`plugin ${action} requires a bundled plugin name or a module path`);
+      if (!selector) throw Error(`plugin ${action} requires a local module path`);
       expectCount(extra, 0);
       const file = await setPluginEnabled(stateDirectory(), selector, action === "enable");
       // The file is the whole state: a host already running keeps what it loaded.
@@ -223,7 +171,7 @@ async function main() {
     print(await requestSession(id, { command: "plugins" }));
     return;
   }
-  if (command === "list") { expectCount(args, 0); print((await liveSessions()).map(({ info }) => info)); return; }
+  if (command === "list") { expectCount(args, 0); print((await liveSessions()).map(({ info }) => sessionSummary(info))); return; }
   if (command === "close" && (args.includes("--all") || args.includes("--idle"))) {
     if (args.includes("--all") && args.includes("--idle")) throw Error("close --all and close --idle are mutually exclusive");
     if (args.includes("--all")) {
@@ -319,7 +267,8 @@ async function main() {
       break;
     }
     case "attach": expectCount(rest, 0); print(await attachSession(id)); break;
-    case "info": case "close": expectCount(rest, 0); print(await requestSession(id, { command })); break;
+    case "info": expectCount(rest, 0); print(sessionSummary(await requestSession<SessionInfo>(id, { command }))); break;
+    case "close": expectCount(rest, 0); print(await requestSession(id, { command })); break;
     default: throw Error(`Unknown command: ${command}; use tide --help`);
   }
 }

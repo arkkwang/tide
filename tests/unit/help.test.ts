@@ -52,7 +52,6 @@ test("launch validates combined options before opening a terminal", () => {
     [["launch", "--with-command", "echo ok", "--with-read", "--lines", "0"], /1..2000/],
     [["launch", "--with-command", "echo ok", "--with-enter"], /Unknown operation option/],
     [["launch", "--with-read"], /require --with-command/],
-    [["run", "--with-command", "echo ok"], /Unknown launch option/],
   ] as Array<[string[], RegExp]>) {
     const result = cli(...args);
     assert.equal(result.status, 1, result.stderr);
@@ -152,7 +151,7 @@ test("launch help documents --attach placement and platform scope", () => {
 test("local help keeps parameter contracts rather than workflow instructions", () => {
   assert.match(commandHelp.send!, /failed requests may have delivered input/);
   assert.match(commandHelp.launch!, /Startup timeout sends nothing/);
-  assert.match(commandHelp.launch!, /require --with-command or --profile/);
+  assert.match(commandHelp.launch!, /require --with-command/);
   assert.match(commandHelp.resize!, /applied=false, exit 3/);
   assert.match(commandHelp['wait-idle']!, /leaves the task running/);
   assert.match(commandHelp.close!, /including ongoing work/);
@@ -160,7 +159,7 @@ test("local help keeps parameter contracts rather than workflow instructions", (
   assert.match(commandHelp.info!, /lastCommand/);
   assert.match(commandHelp.plugin!, /NEW sessions/);
   assert.match(commandHelp.plugin!, /loads and validates local code/);
-  assert.match(commandHelp.plugin!, /consume tokens/);
+  assert.match(commandHelp.plugin!, /Local module paths/);
   for (const command of ['launch', 'send', 'scroll', 'resize', 'wait-idle']) {
     assert.match(commandHelp[command]!, /--lines\/--full require --with-read/);
     assert.match(commandHelp[command]!, /--full and --lines are mutually exclusive/);
@@ -172,7 +171,7 @@ test("local help keeps parameter contracts rather than workflow instructions", (
 test("overview includes common call syntax without requiring command help", () => {
   const overview = cli().stdout;
   for (const syntax of [
-    'launch [--shell executable] [--cwd directory] [--with-command text | --profile label]',
+    'launch [--shell executable] [--cwd directory] [--with-command text]',
     'send <id> <text> [--with-enter]',
     'send <id> --stdin [--with-enter]',
     'send <id> --key <key> [keys...]',
@@ -185,4 +184,30 @@ test("overview includes common call syntax without requiring command help", () =
   for (const command of ['list', 'info', 'close']) {
     assert.equal(commandHelp[command]!.split('\n').length, 3);
   }
+});
+
+test("launch profiles are removed and rejected before launching a session", () => {
+  assert.equal(commandHelp.profiles, undefined);
+  assert.doesNotMatch(commandHelp.launch!, /--profile/);
+  assert.equal(cli('help', 'profiles').status, 1);
+  for (const args of [
+    ['launch', '--profile', 'old'],
+    ['launch', '--with-command', 'echo NEVER_SENT', '--profile', 'old'],
+  ]) {
+    const result = cli(...args);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /Unknown.*--profile/);
+  }
+});
+
+
+test("run is no longer a built-in command or help topic", () => {
+  assert.equal(commandHelp.run, undefined);
+  assert.equal(cli('help', 'run').status, 1);
+  const result = cli('run');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Unknown command: run/);
+  assert.equal(result.stdout, '');
+  assert.doesNotMatch(cli().stdout, /run \[--shell/);
 });

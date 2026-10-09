@@ -11,10 +11,10 @@ entry="$(cd -- "$(dirname -- "$source_path")/.." && pwd)/dist/tide.mjs"
 case "${OSTYPE:-}" in
   msys*|cygwin*)
     entry="$(cygpath -m "$entry")"
-    # Literal text is not a filesystem argument, and only run/launch take real paths
+    # Literal text is not a filesystem argument, and only launch takes real paths
     # (--shell/--cwd, -- shell args); every other command's arguments are text,
     # including a plugin namespace's. This must happen before Node starts.
-    case "${1:-}" in run|launch) ;; *) export MSYS2_ARG_CONV_EXCL='*' ;; esac
+    case "${1:-}" in launch) ;; *) export MSYS2_ARG_CONV_EXCL='*' ;; esac
     ;;
 esac
 exec node "$entry" "$@"

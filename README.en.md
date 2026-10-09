@@ -58,7 +58,7 @@ tide close 5fefa
 
 Replace `5fefa` with the actual ID prefix returned by `launch` or `tide list`. Every command that takes a Session ID accepts an unambiguous prefix, with an exact full-ID match taking priority; multiple candidates are listed and the command is rejected. When reusing an existing session, run `tide list` first, then `tide read <id>` to confirm the current prompt. If you already hold a fresh combined `read`, decide the next step from it — there is no need to grab the screen again.
 
-`tide run` creates a background session and attaches the current terminal to it without opening another window; closing that terminal likewise only disconnects the viewer. When a startup file needs interaction, or you must inspect the boot screen first, use `tide launch` with no command and then `tide wait-idle <id> --with-read`.
+When a startup file needs interaction, or you must inspect the boot screen first, use `tide launch` with no command and then `tide wait-idle <id> --with-read`.
 
 Common paths (always confirm the current screen before sending input):
 
@@ -83,9 +83,11 @@ A `launch` without `--with-command` only reports that the session is registered;
 
 **Grabbing long output repeatedly, or scrolling back through history, usually means the wrong tool is being used.** Tide is for collaborating with a visible interactive terminal: checking the current screen and handling input prompts. For build logs, test results, bulk command output and the like, prefer a Bash / Shell execution tool or another suitable tool — redirect to a file, then read it on demand, or search it with grep / rg. For example, run `your-command > output.log 2>&1` in Bash and then `rg -n 'error|failed' output.log`. Use `tee` when you also want to watch it in the terminal. `--lines` and `scroll` exist for the occasional look at surrounding context or for driving a TUI; supporting them is not a recommendation to turn repeated screen grabs and scrolling into a log-analysis workflow.
 
+`list` returns an array of session summaries; `info <id>` returns one summary with the same fields: `id`, `cwd`, `lastCommand`, `display`, `promptState`, `shell`, `createdAt`, `idleForMs`. `cwd` is the initial directory, not updated by shell `cd`; `shell` is the launched shell path and `createdAt` is the session creation time. Neither query exposes PIDs, exit state or the last-output timestamp; other commands and internal session metadata are unchanged.
+
 `list` and `info` return `lastCommand`: the most recent shell command recognized as having started executing (for example `"claude --resume"`). It is kept after the command finishes and updated when the next one starts; unsubmitted input, program output and TUI chat do not update it. It reuses the Bash 4.4+ prompt-end / execution boundary and extracts the command from the terminal echo — it does not scan history and does not store anything extra on disk. Screen wrapping of single-line commands is supported; multiline input, an unrecognized shell, or a lost input boundary yields `null`. Clearing the screen or resizing the window does not delete a recorded command, but may affect the next recognition. It is neither the current process name nor a trustworthy execution audit, and sensitive arguments in the command may be visible. Older hosts lack this field — open a new session.
 
-`list` and `info` also return live activity: `idleForMs` is how long the current screen has stayed unchanged, in milliseconds; `lastOutputAt` is the UTC ISO time of the last PTY output received, or `null` before any output. Text, size or activity-buffer changes reset idle; repeated repainting, colours, title and cursor changes do not, although any non-empty output updates `lastOutputAt`. With no output at all, idle starts counting when the screen is initialized; queries and screen grabs do not reset it. Use `list` to find long-quiet sessions and then grab their screens; these fields do not mean the task finished, failed, or needs attention. Older hosts may lack both fields — they appear after opening a new session.
+`idleForMs` is how long the current screen has stayed unchanged, in milliseconds. Text, size or active-buffer changes reset idle; repeated repainting, colours, title and cursor changes do not. With no output, it counts from screen initialization; queries and screen grabs do not reset it. Use it to find long-quiet sessions, then inspect their screens; it does not indicate task completion, failure or a need for intervention. Older hosts may lack this field; open a new session.
 
 `list` and `info` also return `promptState`: `at-prompt` means no command submission (OSC 133 `C`) has been seen since the latest bash prompt boundary (`A`/`B`), `running` means the latest boundary seen was a submission, and `unknown` means no boundary was ever seen (a shell other than bash, or startup files that override the prompt integration). It describes only the prompt/execution boundary visible on screen: a foreground program waiting for input (`cat`, a script asking a question) reads as `running`. Clearing the screen and resizing leave it untouched, and the next prompt resumes tracking. It says nothing about whether a task finished, and a foreground program that emits these sequences itself affects it too. Older hosts lack the field — it appears after opening a new session.
 
@@ -103,12 +105,10 @@ Commands carry their own complete help, so an Agent need not read this README fi
 
 | Command | Behaviour |
 | --- | --- |
-| `run [--shell executable] [--cwd directory] [-- shell-args...]` | Create a background session and attach the current terminal |
-| `launch [--shell executable] [--cwd directory] [--with-command text \| --profile label] [--attach] [--wait-idle] [--with-read] [-- shell-args... \| -- <bin-args...>]` | Create a background session (no window by default) with a `T<short id>` bash prompt; can send a command and Enter, open a viewer, then wait for and return the screen |
+| `launch [--shell executable] [--cwd directory] [--with-command text] [--attach] [--wait-idle] [--with-read] [-- shell-args...]` | Create a background session (no window by default) with a `T<short id>` bash prompt; can send a command and Enter, open a viewer, then wait for and return the screen |
 | `attach <id>` | Open a terminal that connects to the existing session; closing it does not end the session |
-| `profiles` | List the label, description and env key count of each `.tide/launch-profiles.json` entry |
 | `list` | List the shell sessions managed on this machine plus each `lastCommand`; does not scan CLI history |
-| `info <id>` | Return process information such as Tide ID, PID, shell and directory |
+| `info <id>` | Return one session summary with the same fields as `list` |
 | `send <id> <text>` | Write text; `--with-enter` sends Enter after the text |
 | `send <id> --stdin` | Read verbatim UTF-8 from a pipe, suited to long and multiline text |
 | `send <id> --key <key> [keys...]` | Send named keys or key combinations in order |
@@ -118,9 +118,9 @@ Commands carry their own complete help, so an Agent need not read this README fi
 | `wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-read]` | Wait for the screen to stop changing, or until timeout, optionally returning the screen |
 | `close <id>` / `close --all` / `close --idle` | End one session, every session under the current `TIDE_STATE_DIR`, or the ones sitting at a bash prompt, including running tasks; this is not a CLI turn interrupt |
 | `plugin list` | List the plugins Tide knows about and whether they are enabled, without touching any session |
-| `plugin enable <name\|path>` / `plugin disable <name\|path>` | Rewrite the plugin list in `.tide/plugins.json`; only affects sessions started afterwards |
+| `plugin enable <path>` / `plugin disable <path>` | Rewrite the plugin list in `.tide/plugins.json`; only affects sessions started afterwards |
 | `plugin status <id>` | Show that session's plugin matches, commands and plugin errors |
-| `<plugin-id> <command> <id> [args...]` | Invoke a plugin's own command, for example `ccr status <id>`; an `all` command accepts `--all` in place of the id and returns one result per matching session |
+| `<plugin-id> <command> <id> [args...]` | Invoke a plugin's own command, for example `screen contains <id> 'ready'`; an `all` command accepts `--all` in place of the id and returns one result per matching session |
 
 Output is JSON by default. `read --plain-text` prints only the snapshot text, preserving spaces, newlines and omission notices, with no JSON and no colour escapes; if the output region is narrower than the original window, the outer terminal may still wrap it.
 
@@ -219,95 +219,30 @@ tide resize 5fefa --cols 120 --rows 35 --wait-idle --with-read
 
 An unconfirmed observation: under ConPTY, MSYS bash was once seen dropping the first byte written immediately after a size change. This was seen outside Tide, cannot be reproduced on demand, and did not reappear when typing again after a manual resize; the trigger is unknown. If it happens, retype the input.
 
-## Launch profiles
-
-`tide launch --profile <label>` does "start session + switch env + run command" in one step, saving the round trips of opening a bash, changing environment, and then starting the CLI. The config lives in Tide's own `.tide/launch-profiles.json` and does not depend on external shell configuration or aliases.
-
-```json
-{
-  "profiles": [
-    {
-      "label": "claude-alt",
-      "description": "Claude Code against an alternate Anthropic-compatible endpoint",
-      "commands": ["claude"],
-      "env": {
-        "ANTHROPIC_BASE_URL": "https://example.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": "<token>",
-        "ANTHROPIC_MODEL": "<model-id>"
-      }
-    },
-    {
-      "label": "codex-alt",
-      "description": "Codex against an alternate OpenAI-compatible endpoint",
-      "commands": ["codex"],
-      "env": {
-        "OPENAI_BASE_URL": "https://example.com/v1",
-        "OPENAI_API_KEY": "<key>"
-      }
-    },
-    {
-      "label": "setup-then-run",
-      "description": "Pull latest changes, then start the CLI",
-      "commands": ["git pull", "claude"]
-    }
-  ]
-}
-```
-
-Common commands:
-
-```bash
-# List available profiles (label + description + command + commands + env key count)
-tide profiles
-
-# One step: start a session, switch to claude-alt, cd to /path/to/project, start claude
-tide launch --profile claude-alt --cwd /path/to/project
-
-# Pass extra arguments through to the last command
-tide launch --profile claude-alt --cwd /path/to/project -- --model <model-id>
-
-# Create the session and open a viewer (Windows/macOS); attach happens after the command is sent
-tide launch --profile claude-alt --cwd /path/to/project --attach
-
-# Run git pull and then claude
-tide launch --profile setup-then-run --cwd /path/to/project
-
-# Without --profile the behaviour is unchanged: a bare bash that receives nothing
-tide launch --cwd /path/to/project
-```
-
-Label rules: matches `[a-zA-Z0-9_-]+`, case-insensitive, must be unique. `commands` is a non-empty array of single-line shell commands, each tokenized with shell-quote rules (single and double quotes preserve spaces, whitespace splits); they are joined with `;` in order, and a failure of one does not block the next. Arguments after `--` are appended to the last command, replacing any trailing arguments. `--profile` and `--with-command` are mutually exclusive. After launch the JSON gains a few profile fields:
-
-- `profile`: the selected label
-- `index`: the position of the profile in the config array
-- `command`: `argv[0]` of the first command (the binary name, such as `claude`)
-- `commands`: the full command list, each already joined into a string, so it is easy to see what ran
-
-A missing or invalid config produces an error with a minimal template, to help new users get started. The default path is `${TIDE_STATE_DIR}/launch-profiles.json`, overridable with `TIDE_LAUNCH_PROFILES=<path>`. Secrets are stored in plain text in that JSON, so `chmod 600` it if needed.
-
 ## Plugins
 
-Plugins are loaded explicitly through `.tide/plugins.json`. Each declares an `id` (the addressing namespace, globally unique), a `name` (display name) and `commands` (its own commands), and may also provide `detect`, an optional `start`, and output-change subscriptions. Plugin commands are invoked as `tide <plugin-id> <command> <session id> [args...]` and do not occupy core command names; the CLI only parses the namespace and routes to that session's host, where the plugin code runs. A command declared with `all: true` accepts `--all` in place of the session ID, and the CLI runs it once per matching session and returns `[{id, result}]`; aggregation happens in the CLI while the state stays in each session's host. A plugin ID may not collide with a core command name: the CLI dispatches core commands first, so a colliding plugin could never be reached — therefore config loading (starting a session, `tide plugin list`, `tide plugin enable`) fails outright instead of loading it. The recovery plugins reuse the same `send` and `sendKey` paths rather than a separate delivery route.
+Plugins are loaded explicitly through `.tide/plugins.json`. Each declares an `id` (the addressing namespace, globally unique), a `name` (display name) and `commands` (its own commands), and may also provide `detect`, an optional `start`, and output-change subscriptions. Plugin commands are invoked as `tide <plugin-id> <command> <session id> [args...]` and do not occupy core command names; the CLI only parses the namespace and routes to that session's host, where the plugin code runs. A command declared with `all: true` accepts `--all` in place of the session ID, and the CLI runs it once per matching session and returns `[{id, result}]`; aggregation happens in the CLI while the state stays in each session's host. A plugin ID may not collide with a core command name: the CLI dispatches core commands first, so a colliding plugin could never be reached — therefore config loading (starting a session, `tide plugin list`, `tide plugin enable`) fails outright instead of loading it. Plugins reuse the same `send` and `sendKey` paths rather than a separate delivery route.
 
-[Plugin contract and example](docs/plugins.md). The optional built-ins are `cxr` (Codex) and `ccr` (Claude Code); enable them with `tide plugin enable ccr` (editing `.tide/plugins.json` directly is equivalent) and reopen the session for it to take effect:
+[Plugin contract and example](docs/plugins.md). Local module plugins remain supported; no application recovery plugins are bundled. Paths are relative to the directory containing `plugins.json`:
 
 ```json
-{"plugins":["cxr","ccr"]}
+{"plugins":["../examples/screen-plugin.mjs"]}
 ```
 
 ```bash
-tide plugin list          # all plugins and whether they are enabled
-tide plugin status 5fefa  # which plugins are active in that session
-tide ccr --help           # ccr's own commands
-tide ccr status --all     # status for every matching session
-tide ccr status 5fefa
-tide ccr watch 5fefa      # start watching that session
-tide ccr unwatch 5fefa
+tide plugin list
+tide plugin status 5fefa
+tide screen --help
+tide screen contains 5fefa 'ready'
 ```
 
-The recovery plugins handle rate limits and API connection interruptions, and only take over the latest response window when the interruption is explicit and the input box is empty. The final error screen must stay stable for 3 consecutive minutes by default, and they will not take over while the CLI is still retrying or a new reply or user input appears. Codex quota is queried through the App Server and network interruptions are probed independently with `codex exec --ephemeral`; Claude is probed with a `claude -p` JSON ping/pong. Only after recovery is confirmed is "continue" sent to the original window, and an unsuccessful probe is rechecked every 5 minutes. Plugins do not watch sessions by default: configuration only means the plugin process is loaded, and `watch` is what starts observing and timing. `status` is read-only and triggers no probes or sends. Configuration, limits and verification scope are in [Interruption recovery plugins](docs/resume-plugins.md).
+For historical `ccr` / `cxr` sources and config migration, see [Removed recovery plugins](docs/resume-plugins.md).
 
 ## Verification and migration
+
+`run` has been removed. Create background sessions with `launch`; use `attach <id>` or `launch --attach` for a viewer. Attaching the current terminal is no longer a public entry point.
+
+Launch profiles (`profiles`, `launch --profile`, `TIDE_LAUNCH_PROFILES`) have been removed. Set environment variables in the caller and use scripts for command sequences; launch with `--cwd` and `--with-command`. Old `launch-profiles.json` files are no longer read or automatically deleted; handle any stored secrets appropriately.
 
 The source is organised by responsibility:
 
@@ -316,12 +251,8 @@ src/
   cli/                      command parsing and help
   session/                  session host, launch, registry and IPC
   terminal/                 screen rendering, keys, shell and idle detection
-  profile-config/           launch profile loading, validation, shell command generation
   plugins/
     runtime.ts              plugin contract, loading and lifecycle
-    codex-resume/           Codex probe and recovery entry points
-    claude-code-resume/     Claude Code probe and recovery entry points
-    recovery/               shared recovery flow, screen recognition and probe processes
 tests/
   unit/                     unit tests
   integration/              integration tests with real PTYs and sessions

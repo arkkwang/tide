@@ -30,37 +30,40 @@ function cli(state: string, ...args: string[]) {
 test("setPluginEnabled creates plugins.json and keeps keys the core does not use", async () => {
   const state = tempStateDir();
   try {
-    assert.equal(await setPluginEnabled(state, "ccr", true), join(state, "plugins.json"));
-    assert.deepEqual(written(state), { plugins: ["ccr"] });
-    writeFileSync(join(state, "plugins.json"), JSON.stringify({ plugins: ["ccr"], note: "keep" }));
-    await setPluginEnabled(state, "cxr", true);
-    assert.deepEqual(written(state), { plugins: ["ccr", "cxr"], note: "keep" });
-    await setPluginEnabled(state, "ccr", false);
-    assert.deepEqual(written(state), { plugins: ["cxr"], note: "keep" });
-    assert.deepEqual((await pluginList(state)).map((entry) => `${entry.id}:${entry.enabled}`), ["cxr:true", "ccr:false"]);
+    moduleFile(state, "first.mjs", 'export default { id: "first", name: "First", detect: () => true };');
+    moduleFile(state, "second.mjs", 'export default { id: "second", name: "Second", detect: () => true };');
+    assert.equal(await setPluginEnabled(state, "./first.mjs", true), join(state, "plugins.json"));
+    assert.deepEqual(written(state), { plugins: ["./first.mjs"] });
+    writeFileSync(join(state, "plugins.json"), JSON.stringify({ plugins: ["./first.mjs"], note: "keep" }));
+    await setPluginEnabled(state, "./second.mjs", true);
+    assert.deepEqual(written(state), { plugins: ["./first.mjs", "./second.mjs"], note: "keep" });
+    await setPluginEnabled(state, "./first.mjs", false);
+    assert.deepEqual(written(state), { plugins: ["./second.mjs"], note: "keep" });
+    assert.deepEqual((await pluginList(state)).map((entry) => `${entry.id}:${entry.enabled}`), ["second:true"]);
   } finally { rmSync(state, { recursive: true, force: true }); }
 });
 
 test("setPluginEnabled validates the candidate before writing", async () => {
   const state = tempStateDir();
   try {
+    moduleFile(state, "first.mjs", 'export default { id: "first", name: "First", detect: () => true };');
     await assert.rejects(setPluginEnabled(state, "nope", true), /Unknown plugin: nope/);
-    await assert.rejects(setPluginEnabled(state, "ccr", false), /Plugin not enabled: ccr/);
-    await setPluginEnabled(state, "ccr", true);
-    await assert.rejects(setPluginEnabled(state, "ccr", true), /already enabled/);
+    await assert.rejects(setPluginEnabled(state, "./first.mjs", false), /Plugin not enabled/);
+    await setPluginEnabled(state, "./first.mjs", true);
+    await assert.rejects(setPluginEnabled(state, "./first.mjs", true), /already enabled/);
     // A module that cannot load, or whose id collides with a core command, is
     // rejected without reaching the file.
     const broken = moduleFile(state, "broken.mjs", "export default {}\n");
     await assert.rejects(setPluginEnabled(state, broken, true), /Invalid Tide plugin/);
     const shadow = moduleFile(state, "shadow.mjs", "export default { id: \"send\", name: \"Shadow\", detect: () => true, commands: {} };\n");
     await assert.rejects(setPluginEnabled(state, shadow, true), /collides with a core command: send/);
-    assert.deepEqual(written(state).plugins, ["ccr"]);
+    assert.deepEqual(written(state).plugins, ["./first.mjs"]);
     // A valid module is accepted; a second module claiming the same id is not.
     const ok = moduleFile(state, "ok.mjs", "export default { id: \"ok\", name: \"Ok\", detect: () => true, commands: {} };\n");
     await setPluginEnabled(state, ok, true);
     const twin = moduleFile(state, "ok2.mjs", "export default { id: \"ok\", name: \"Twin\", detect: () => true, commands: {} };\n");
     await assert.rejects(setPluginEnabled(state, twin, true), /Duplicate plugin ID: ok/);
-    assert.deepEqual(written(state).plugins, ["ccr", ok]);
+    assert.deepEqual(written(state).plugins, ["./first.mjs", ok]);
   } finally { rmSync(state, { recursive: true, force: true }); }
 });
 
@@ -86,6 +89,22 @@ test("plugin list fails on a collision and disable still removes the entry", () 
     assert.equal(disabled.status, 0, disabled.stderr);
     const listed = cli(state, "plugin", "list");
     assert.equal(listed.status, 0, listed.stderr);
-    assert.deepEqual(JSON.parse(listed.stdout).map((entry: { id: string }) => entry.id), ["cxr", "ccr"]);
+    assert.deepEqual(JSON.parse(listed.stdout).map((entry: { id: string }) => entry.id), []);
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test("empty configuration has no bundled catalog; retired selectors fail without rewriting config", async () => {
+  const state = tempStateDir();
+  try {
+    assert.deepEqual(await pluginList(state), []);
+    assert.deepEqual(await loadPlugins(state), []);
+    writeFileSync(join(state, "plugins.json"), JSON.stringify({ plugins: ["ccr", "cxr"], note: "keep" }));
+    const before = readFileSync(join(state, "plugins.json"), "utf8");
+    await assert.rejects(loadPlugins(state), /Former built-ins.*docs\/resume-plugins.md/);
+    assert.equal(readFileSync(join(state, "plugins.json"), "utf8"), before);
+    await setPluginEnabled(state, "ccr", false);
+    await setPluginEnabled(state, "cxr", false);
+    assert.deepEqual(written(state), { plugins: [], note: "keep" });
+    assert.deepEqual(await pluginList(state), []);
   } finally { rmSync(state, { recursive: true, force: true }); }
 });

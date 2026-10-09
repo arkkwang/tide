@@ -20,7 +20,7 @@ export function launchCommand(platform: string, node: string, entry: string, id:
     return { binary: "wt.exe", args: args.map((arg) => arg.replaceAll(";", "\\;")) };
   }
   if (platform === "darwin") return { binary: "open", args: ["-a", "Terminal", script] };
-  throw Error("Opening a terminal supports Windows and macOS; use tide run in your current terminal");
+  throw Error("Opening a terminal supports Windows and macOS; use tide launch without --attach for a background session");
 }
 
 function handoffPath(id: string, state: string) { return join(state, "terminal-launches", `${validateId(id)}.json`); }

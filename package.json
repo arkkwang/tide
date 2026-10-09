@@ -30,7 +30,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "npm run build && node --import tsx --test tests/unit/terminal.test.ts tests/unit/display.test.ts tests/integration/attach.test.ts tests/integration/close-all.test.ts tests/integration/close-idle.test.ts tests/integration/session.test.ts tests/unit/help.test.ts tests/unit/workflow.test.ts tests/unit/resume.test.ts tests/unit/profile-config.test.ts tests/unit/plugin-config.test.ts tests/integration/resume-session.test.ts tests/integration/windows-input.test.ts",
+    "test": "npm run build && node --import tsx --test tests/unit/terminal.test.ts tests/unit/display.test.ts tests/integration/attach.test.ts tests/integration/close-all.test.ts tests/integration/close-idle.test.ts tests/integration/session.test.ts tests/unit/help.test.ts tests/unit/workflow.test.ts tests/unit/plugin-config.test.ts tests/integration/windows-input.test.ts",
     "build": "node scripts/build.mjs",
     "link:local": "npm run build && npm link --ignore-scripts --offline --no-audit --no-fund",
     "prepack": "npm run build",

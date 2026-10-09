@@ -1,6 +1,6 @@
 # Tide plugins
 
-插件用于在通用终端能力之上增加识别、结构化查询或自动恢复。核心不内置 Claude/Codex 状态机，也不读取 CLI 历史文件。
+插件用于在通用终端能力之上增加识别、结构化查询或应用专用操作。核心不内置 Claude/Codex 状态机，也不读取 CLI 历史文件。
 
 在 `TIDE_STATE_DIR/plugins.json`（默认项目安装目录旁的 `.tide/plugins.json`）中显式列出本地 ES module：
 
@@ -8,14 +8,14 @@
 {"plugins": ["../examples/screen-plugin.mjs"]}
 ```
 
-相对路径以这个配置文件所在目录为基准。每个会话启动时加载一次，修改后重开会话。也可以用 `tide plugin enable <名称|路径>` / `tide plugin disable <名称|路径>` 改写这个文件：参数就是文件里存的那个字符串（打包名或模块路径），两者同样只对之后启动的会话生效，并打印改动后的启用状态。`enable` 会先加载并校验模块，加载不了或 ID 冲突的插件不会被写进文件。没有自动扫描工作目录、下载或热更新。插件以用户权限运行，应仅配置可信代码。
+相对路径以这个配置文件所在目录为基准。每个会话启动时加载一次，修改后重开会话。也可以用 `tide plugin enable <路径>` / `tide plugin disable <路径>` 改写这个文件：参数就是文件里存的那个字符串（模块路径），两者同样只对之后启动的会话生效，并打印改动后的启用状态。`enable` 会先加载并校验模块，加载不了或 ID 冲突的插件不会被写进文件。没有自动扫描工作目录、下载或热更新。插件以用户权限运行，应仅配置可信代码。
 
-也可填写随 Tide 打包的名称 `cxr`(Codex)、`ccr`(Claude Code)，见[中断恢复插件](resume-plugins.md)。配置 `cxr` / `ccr` 只是加载插件进程；两者默认**不监听**会话，需要显式 `tide <插件 ID> watch <id>` 才开始观察和计时，未配置则完全不启动。
+Tide 不再内置应用恢复插件；原 `ccr` / `cxr` 的历史源码和迁移说明见[已移除的恢复插件](resume-plugins.md)。
 
 ```bash
-tide plugin list          # 所有插件及启用状态
-tide plugin enable ccr    # 写 plugins.json；只对新会话生效
-tide plugin disable ccr
+tide plugin list          # 当前配置的本地插件
+tide plugin enable ../examples/screen-plugin.mjs    # 写 plugins.json；只对新会话生效
+tide plugin disable ../examples/screen-plugin.mjs
 tide plugin status <id>   # 某个会话里哪些插件生效
 tide screen contains <id> 'Claude Code'
 tide screen contains --all 'Claude Code'   # 每个匹配会话各问一次
@@ -83,6 +83,4 @@ export default {
 
 关闭会话时取消订阅、调用清理函数并拒绝后续写入。核心没有独立后台 watcher；插件生命周期随托管进程结束。
 
-随包提供屏幕查询示例、两个可选中断恢复插件。CLI 特有的屏幕判定、探测策略和缓冲恢复逻辑位于插件层，不加入终端核心。
-
-> 启动新会话时直接切 env + 启动二进制（不需要先开 bash）的能力已迁到 `tide launch --profile`，详见 README 的"启动 profile"一节。本节只讲插件。
+随包提供 `examples/screen-plugin.mjs` 屏幕查询示例。应用专用逻辑由外部插件维护，不加入终端核心。

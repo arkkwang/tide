@@ -21,7 +21,7 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
   const registry = new Registry(state);
   const children: Array<{ child: ChildProcess; exit: Promise<number>; exited: boolean }> = [];
   async function host() {
-    const child = spawn(process.execPath, [resolve('tests/fixtures/terminal-driver.mjs'), entry, "run", "--shell", shell!, "--", "--noprofile", "--norc", "-i"], { windowsHide: true, cwd: process.cwd(), env: { ...testEnv, TIDE_STATE_DIR: state, TERM: "xterm-256color" } });
+    const child = spawn(process.execPath, [resolve('tests/fixtures/terminal-driver.mjs'), '--import', 'tsx', resolve('tests/fixtures/launch-view.ts'), entry, "--shell", shell!, "--", "--noprofile", "--norc", "-i"], { windowsHide: true, cwd: process.cwd(), env: { ...testEnv, TIDE_STATE_DIR: state, TERM: "xterm-256color" } });
     let hostPid = 0;
     child.stdout.on('data', (data) => { hostPid = Number(String(data).trim()); });
     child.stderr.on('data', (data) => t.diagnostic(String(data)));
@@ -84,11 +84,22 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
     await cli(['wait-idle', short, '--idle-time', '0.2', '--timeout', '3']);
     const activity = JSON.parse((await cli(['info', short])).out) as SessionInfo;
     assert(typeof activity.idleForMs === 'number' && activity.idleForMs >= 150);
-    assert(Number.isFinite(Date.parse(activity.lastOutputAt!)));
+    const summaryKeys = ['id', 'cwd', 'lastCommand', 'display', 'promptState', 'shell', 'createdAt', 'idleForMs'].sort();
+    assert.deepEqual(Object.keys(activity).sort(), summaryKeys);
     const listed = JSON.parse((await cli(['list'])).out) as SessionInfo[];
     const listedActivity = listed.find((s) => s.id === a.id)!;
     assert(listedActivity.idleForMs! >= activity.idleForMs);
-    assert.equal(listedActivity.lastOutputAt, activity.lastOutputAt);
+    for (const summary of listed) assert.deepEqual(Object.keys(summary).sort(), summaryKeys);
+    // Same fields and semantics; idle is sampled at different times.
+    const { idleForMs: _infoIdle, ...infoFields } = activity;
+    const { idleForMs: _listIdle, ...listFields } = listedActivity;
+    assert.deepEqual(listFields, infoFields);
+    const internal = await requestSession<SessionInfo>(short, { command: "info" }, registry);
+    assert.equal(typeof internal.pid, 'number');
+    assert.equal(typeof internal.shellPid, 'number');
+    assert.equal(internal.exited, false);
+    assert.equal(internal.exitCode, null);
+    assert(Number.isFinite(Date.parse(internal.lastOutputAt!)));
     assert.equal(activity.lastCommand, "printf 'FORMAL_%s_OK\\n' SHELL");
     assert.equal(listedActivity.lastCommand, activity.lastCommand);
     assert.equal(activity.promptState, 'at-prompt', 'the bash prompt boundary is visible again');
