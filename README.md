@@ -2,276 +2,133 @@
 
 # Tide
 
-为人和 Agent 提供持续运行的交互式 shell：默认在后台创建会话，Agent 可发送输入、读取屏幕；需要人工查看时再用 `attach` 打开终端。Claude Code / Codex 是 shell 中的普通程序，Session ID 标识会话，不是窗口。
+**让 Agent 操作终端，让人随时接手同一个会话。**
 
-## 平台支持
+Tide 是一个面向人和 Agent 协作的交互式终端工具。它在后台托管 Bash 会话，让 Agent 通过命令行发送文本、按键和读取画面；需要人工介入时，再打开终端窗口，接着操作原来的程序。
 
-支持 Windows（经 Git Bash）和 macOS，需要 Node 20+。
+## 为什么做 Tide
 
-- `attach` 和 `launch --attach` 只在 Windows 与 macOS 上实现，其他平台直接报错，不静默降级。
-- Linux 及其他平台未验证。`node-pty` 的预编译产物只覆盖 win32 / darwin，Linux 安装会退回 `node-gyp` 源码编译，能否成功取决于本机构建环境。
-- 终端相关行为只在 Windows Terminal 上验证过；其他终端不保证支持。
+执行一条命令、拿到输出，普通 Shell 工具就足够了。但许多工作不是一次调用就能结束：命令行助手会持续对话，REPL 会保留变量，安装程序会停下来等待选择。Agent 需要继续操作，人也可能想看看它在做什么，或亲自完成其中一步。
 
-## 快速开始
+这时需要的不只是“再执行一条命令”，而是**让这段交互持续存在，并让人和 Agent 都能访问它**。
 
-从 npm 安装（需要 Node 20+）：
+Tide 把会话和窗口分开：程序在后台运行，Agent 不必打开窗口就能操作；人通过 `attach` 打开同一会话，关闭窗口后程序仍继续运行。再次接入不需要重启程序，也不需要重新构造它的交互状态。
+
+## 它的优势
+
+- **接续同一段工作。** Shell 的目录、环境和正在运行的前台程序保留在同一会话中。可以接着给 Node REPL 输入表达式，也可以继续与命令行助手对话。
+- **人和 Agent 面对同一个终端。** Agent 用 `send` / `read` 操作，人用真实终端查看和输入；不是各自启动一份程序再同步结果。
+- **读取画面，而不只是拼接输出。** Tide 解析光标移动、清屏和覆盖绘制，提供终端的文本画面。菜单、进度显示和终端界面程序（TUI）可以通过画面和按键交互，不必为这些操作控制桌面焦点。
+- **给 Agent 一个明确的接口。** 稳定的会话 ID、JSON 输出，以及“发送 → 等待画面安静 → 读取”的组合操作，让调用方可以观察结果再决定下一步。默认读取当前/最近命令的预览，不要求搬运整段终端历史。
+- **不绑定某个 AI 产品。** Claude Code、Codex、REPL 和其他交互式 CLI 都是 Bash 里的普通程序。核心只提供终端能力；应用专用识别和操作可以放在插件中。
+
+## 什么时候用
+
+| 你要做的事 | 更合适的方式 |
+| --- | --- |
+| Agent 持续操作一个交互式 CLI，人偶尔查看或接手 | Tide |
+| 在同一个 REPL、菜单或终端应用中多次输入，依据画面决定下一步 | Tide |
+| 执行脚本、跑测试、获取一次性命令结果 | 普通 Shell / 命令执行工具 |
+| 保存完整日志、搜索大量输出 | 输出到文件，再用文件读取和搜索工具 |
+
+Tide 管理的是**由它启动的会话**，不能接管任意已有的终端窗口。它也不判断业务任务是否完成，不提供机器重启或宿主崩溃后的会话恢复。
+
+## 安装
+
+需要 **Node.js 20+、Bash ≥ 4.4**。仅支持新版 Bash，低版本或其他 shell 会在创建会话前被拒绝。
 
 ```bash
 npm install -g @arkkwang/tide
 ```
 
-从源码安装：
+- **Windows**：安装新版 Git Bash，并将它加入 PATH；打开显示窗口需要 Windows Terminal。建议从 Git Bash 使用 `tide`。
+- **macOS**：系统自带 Bash 3.2 不符合要求。安装新版并指定给 Tide，不必更改默认登录 shell：
+
+  ```bash
+  brew install bash
+  export TIDE_SHELL=/opt/homebrew/bin/bash
+  # Intel Mac 通常使用 /usr/local/bin/bash
+  ```
+
+也可以在每次 `launch` 时用 `--shell` 指定 Bash。macOS 的 `node-pty` helper 若缺执行权限，Tide 会在启动前自动补上；无法修复时给出路径和错误，不使用 `sudo`。
+
+## 试一次人机接续
+
+以 Node REPL 为例，不需要额外安装应用：
+
+```bash
+# 1. 后台启动 Node REPL，返回会话 ID 和画面
+#    查看返回内容，确认已经出现 Node 的 > 提示符
+#    想指定工作目录，可加 --cwd /path/to/project
+tide launch --with-command "node" --wait-idle --with-read
+```
+
+把下面的 `5fefa` 替换成刚返回的实际会话 ID 或无歧义前缀：
+
+```bash
+# 2. Agent 在这个 REPL 中输入表达式，查看结果
+tide send 5fefa '1 + 1' --with-enter --wait-idle --with-read
+
+# 3. 人打开同一个 REPL，可以亲自输入表达式
+tide attach 5fefa
+
+# 4. 关闭显示窗口后，REPL 仍在后台；Agent 可以继续查看
+tide read 5fefa
+
+# 5. 确定不再需要时，结束整个会话
+tide close 5fefa
+```
+
+`attach` 会打开 Windows Terminal 标签页或 macOS Terminal 窗口，不接入当前终端。每个会话最多一个显示窗口。
+
+换成命令行助手时，将 `node` 替换为已经安装的 `claude` 或 `codex` 即可。启动过程需要交互或不确定何时就绪时，先 `tide launch`，再 `tide wait-idle <id> --with-read` 检查画面，之后发送命令。
+
+## 给 Agent 使用
+
+Tide 提供 CLI；能执行本机命令的 Agent 可以调用它，无需在 Tide 中配置模型或 API Key。
+
+```bash
+tide --help              # 发现核心命令
+tide help send           # 查看具体参数和返回含义
+tide list                # 找到已有会话
+tide read 5fefa           # 确认当前画面后，再决定输入什么
+```
+
+调用时记住三点：
+
+1. **输入默认不提交。** `send` 默认只填入文本；使用 `--with-enter` 提交，或 `--key Enter` 单独按回车。
+2. **画面安静不等于任务完成。** `wait-idle` 只观察画面是否持续不变；超时不会停止程序，也不应因此重发任务。需要根据返回画面判断。
+3. **这是共享的实时会话。** 人和 Agent 的输入可能交错，前台程序也可能退出。重要操作应确认当前程序和环境；多步调用不是独占事务。
+
+`read` 默认返回当前/最近命令的前 10 行和后 30 行；需要更多内容时用 `--full` 或 `--lines N`。TUI 读取当前画面。文本、按键、滚动、尺寸和插件参数见[使用参考](docs/cli-reference.md)。
+
+## 状态、支持与边界
+
+- **状态目录统一为 `~/.tide`**，可用 `TIDE_STATE_DIR` 覆盖，与安装目录和系统临时目录分离。Unix socket 使用其中的短路径；Windows 使用命名管道。
+- **后台会话不依赖显示窗口**，但依赖宿主进程存活。关闭窗口只是断开显示；`close` 会终止整个会话及其中的工作。
+- **Windows 与 macOS** 的后台 PTY 流程已有测试覆盖；Windows Terminal 已有桌面验收，macOS 的窗口交互仍需实机验收。Linux 及其他平台未验证。
+- **终端模拟有边界。** 保留画面不是完整运行日志；图像协议、厂商私有扩展和未覆盖的应用不保证恢复。
+
+旧版本升级涉及状态目录、已移除的 `run`、启动 profile 和恢复插件，请先看[迁移说明](docs/cli-reference.md#验证与迁移)。升级不会自动搬动旧目录或停止旧会话。
+
+## 开发与扩展
 
 ```bash
 git clone https://github.com/arkkwang/tide.git
 cd tide
 npm install
-npm run link:local   # 构建并注册全局 tide 命令
-```
-
-然后创建会话：
-
-```bash
-# 后台创建会话，执行 echo hello，等待并返回会话 ID 和画面
-tide launch --with-command "echo hello" --wait-idle --with-read
-```
-
-`npm run link:local` 会先构建再刷新 npm 全局入口。普通代码修改执行 `npm run build` 即可；`package.json` 的 `bin` 改动后必须重新 link，build 不会重建 npm 已生成的启动脚本。尤其从旧的 `dist/tide.mjs` 入口升级时，需要这一步才能启用 Git Bash 文本保护。`npm pack` 前自动构建，包内只包含运行入口、构建产物、示例及文档，不包含本地会话数据。
-
-默认 `launch` 不创建窗口、不请求输入焦点；`launch --attach` 会为刚创建的会话打开显示端，即 Windows Terminal Tab（Windows）或 Terminal 窗口（macOS），不是当前终端，也不保证操作系统授予前台焦点。`tide attach <id>` 自动打开 Windows Terminal Tab（Windows）或 Terminal 窗口（macOS），接入原来的 shell 和正在执行的程序，不重新执行命令。Windows 使用 `wt -w 0`，在当前虚拟桌面最近使用的窗口新建 Tab；没有窗口时新建窗口。沿用调用端的 `WT_PROFILE_ID`，否则使用用户默认配置。`attach` 返回表示显示端已连接，不保证操作系统已授予前台焦点。
-
-每个会话最多一个显示端：正在打开或已接入时，重复 `attach` 直接拒绝，不查找或激活旧 Tab。关闭 Tab 只断开显示，任务继续；再次 `attach` 可恢复查看。`close` 或 shell 退出才结束会话。没有窗口时默认尺寸为 100×30，接入后跟随显示端尺寸，断开后保持最后尺寸。后台宿主错误记录在 `TIDE_STATE_DIR/session-logs/<id>.log`，不是命令输出日志。
-
-会话内的 bash 提示符前面带 `T<短 ID>` 标记（例如 `T3c3375b9`），用于区分 Tide 托管的 shell 和自己开的终端；标记无颜色，直接接在原本 prompt 的同一行前面，不改动原 prompt 内容。标记通过 `PROMPT_COMMAND` 注入，所以不会被重写 PS1 的启动文件（如 Git Bash 的 `git-prompt.sh`）覆盖，也不需要改你的 `.bashrc`。其他 shell 没有对应的环境变量入口，保持自己的提示符。
-
-从返回的 `read` 确认 shell 提示符就绪后，使用同一次返回的 `id` 继续操作：
-
-```bash
-tide send 5fefa 'echo world' --with-enter --wait-idle --with-read
-# 长任务仍在执行时继续等，不重复发送
-tide wait-idle 5fefa --timeout 300 --with-read
-# 确定不再需要整个会话时
-tide close 5fefa
-```
-
-例子中的 `5fefa` 替换成 `launch` 或 `tide list` 返回的实际 ID 前缀。所有接收 Session ID 的命令都支持无歧义前缀，完整 ID 精确匹配优先；有多个候选就列出并拒绝执行。复用已有会话时，先 `tide list`，再 `tide read <id>` 确认当前提示符。已拿到最新的组合操作 `read` 时可直接据此判断下一步，无需再抓一次屏。
-
-启动文件需要交互或必须先检查启动画面时，使用不带命令的 `tide launch`，随后 `tide wait-idle <id> --with-read`。
-
-常用路径（先确认当前画面再输入）：
-
-| 场景 | 操作 |
-| --- | --- |
-| 后台创建会话并启动已知命令 | `tide launch --with-command "echo hello" --wait-idle --with-read`，自动发送 Enter |
-| 提交内容并查看响应 | `tide send <id> '内容' --with-enter --wait-idle --with-read` |
-| 只填入内容，留给用户检查 | `tide send <id> '内容' --with-read` |
-| 确认菜单或权限提示 | `tide send <id> --key Enter --wait-idle --with-read`，按当前提示选择正确按键 |
-| 长任务仍在运行，继续观察 | `tide wait-idle <id> --timeout 60 --with-read`，不重发原任务；若预期执行较长，可调大 `--timeout`（如 300 秒，上限 3600 秒），减少反复等待调用 |
-| 偶尔补看屏幕附近的输出 | `tide wait-idle <id> --with-read --lines 100` |
-| 打断前台任务并查看结果 | `tide send <id> --key Ctrl+C --wait-idle --with-read` |
-| 打开原会话供人交互 | `tide attach <id>`；重复接入直接拒绝 |
-| 只查看当前画面 | `tide read <id>`；需要纯文本时加 `--plain-text` |
-| 结束整个托管会话 | `tide close <id>` |
-
-`read` 和组合 `--with-read` 只选择当前/最近命令：默认前 10 行和后 30 行，不超过 40 行则完整返回；`--full` 返回完整保留区域，`--lines N` 返回末尾 N 行，两者互斥。无命令标记或 TUI 默认返回完整当前画面。所有读取去掉光标及最后内容以下的无用空白行，保留内部空行与原有空格。内部插件捕获和 idle 检测不变。
-
-`--with-command` 接收一个加引号的单行命令，先等待启动画面连续 3 秒不变（最多 30 秒），再发送文本并在 150 ms 后发送 Enter。搭配的 `--wait-idle`、`--idle-time`、`--timeout`、`--with-read`、`--lines` 复用 `send` 的语义，作用于提交命令之后；所有选项放在 `-- shell-args...` 之前。画面安静不保证提示符就绪，启动文件需要交互时仍应分步检查。启动等待超时不发送命令，返回会话信息和 `error`，退出码 1；后续失败也保留会话 ID。成功返回原会话字段及 `written`、`enterWritten` 和所请求的 `wait` / `read`。加 `--attach` 时，在 Enter 之后、`--wait-idle`/`--with-read` 之前打开显示端；成功时另返回 `attached: true` 和 `display: "attached"`。attach 失败时返回 `error.stage: "attach"`，退出码 1；不自动关闭会话，已发送的命令不会重发，跳过后续等待/抓屏，用 `tide attach <id>` 重试。
-
-不带 `--with-command` 的 `launch` 返回的是会话已注册，随后用 `wait-idle <id> --with-read` 检查启动画面；`launch --attach` 则创建会话后立即打开显示端。超时的退出码 3 不会停止目标，仍应读取返回的画面，再决定继续等、处理提示或结束任务。结束整个 shell 才使用 `close`。
-
-**频繁抓取长输出或滚屏查历史，通常意味着该换一种工具使用方式。** Tide 主要用于与可见的交互式终端协作、检查当前画面和处理输入提示。对于构建日志、测试结果、批量命令输出等，优先使用 Bash / Shell 执行工具或其他适合的工具，将输出重定向到文件，再用 Read 按需读取，或用 grep / rg 搜索。例如在 Bash 中执行 `your-command > output.log 2>&1`，再执行 `rg -n 'error|failed' output.log`。需要同时在终端查看时可用 `tee`。`--lines` 和 `scroll` 用于偶尔补看上下文或操作 TUI；支持这些能力，不代表推荐把反复抓屏、滚屏当作日志分析流程。
-
-`list` 返回会话信息数组，`info <id>` 返回其中一个会话的信息对象，两者字段一致：`id`、`cwd`、`lastCommand`、`display`、`promptState`、`shell`、`createdAt`、`idleForMs`。`cwd` 是启动目录，不随 shell 内的 `cd` 更新；`shell` 是启动的 shell 路径，`createdAt` 是会话创建时间。两者不再输出 PID、退出状态或最后输出时间；其他命令与内部会话信息不变。
-
-`list` 和 `info` 返回 `lastCommand`：最近一次识别到开始执行的 shell 命令（例如 `"claude --resume"`），结束后保留，下一条命令开始时更新；未提交的输入、程序输出和 TUI 聊天不更新它。复用 Bash 4.4+ 的提示符结束/执行边界，从终端回显提取命令，不扫描历史、不额外保存到磁盘。支持单行命令的屏幕自动折行；多行输入、未识别的 shell 或丢失输入边界时为 `null`。清屏和调整窗口不会删除已记录的命令，但可能影响下一次识别。它不是当前进程名或可信执行审计，命令中的敏感参数也可能显示出来。旧宿主没有此字段，需新开会话。
-
-`idleForMs` 是当前画面持续未变化的毫秒数。文本、尺寸或活动缓冲区变化会重置 idle，重复重绘、颜色、标题和光标变化不会。无输出时从屏幕初始化开始计时，查询和抓屏不重置计时。可据此筛选长时间安静的会话，再抓屏判断；它不表示任务完成、故障或需要介入。旧宿主可能没有该字段，需新开会话。
-
-同时返回 `promptState`：`at-prompt` 表示最近一次 bash 提示符边界（OSC 133 `A`/`B`）之后没有看到命令提交（`C`），`running` 表示最近看到的是命令提交，`unknown` 表示从未看到边界（非 bash shell，或启动文件覆盖了提示符集成）。它只描述屏幕上可见的提示符/执行边界：等待输入的前台程序（`cat`、需要确认的脚本）算 `running`，不区分任务是否完成，也不代表可以安全结束。清屏和 resize 不改变它，下一条提示符会恢复追踪。前台程序自己输出这些转义序列时同样会影响判断。旧宿主没有此字段，需新开会话。
-
-Git Bash 应使用 `bin/tide` 入口，它在 Node 启动前对文本/插件参数关闭 MSYS 路径转换，避免 `/help` 被改成 `D:/.../Git/help`。引号本身不能阻止这种转换。PowerShell 可直接 `node dist/tide.mjs ...`；在 Git Bash 直接调用 Node 时，文本命令需要 `MSYS2_ARG_CONV_EXCL='*' node dist/tide.mjs send ...`。
-
-包的 `bin` 也指向该 shell 入口；使用 npm 安装的 Windows 命令需要 Git Bash 在 PATH 中。尚未全局安装时直接 `bash bin/tide ...` 即可。
-
-`tide close --all` 无需逐个填写 ID，也不另行确认；仅处理调用时当前状态目录里登记的会话，不影响其他 `TIDE_STATE_DIR`，不包含之后新建的会话。返回每个会话的 JSON 结果：`closing: true` 表示已受理关闭（不代表宿主清理已完成），`stale: true` 表示端点已不存在且清除了失效登记，`error` 表示该项失败或结果不确定。单个失败不阻断其他会话，存在失败时退出码为 1；无会话返回 `[]`、退出码 0。`--all` 不能和 ID 或其他参数混用。
-
-`tide close --idle` 只关掉当前状态目录里“停在提示符前”的会话：要求 `promptState` 为 `at-prompt`（bash 提示符边界之后没有提交过命令），且 `display` 为 `detached`。它不看 `idleForMs`，也不等待：正在执行命令、正在等待输入的前台程序、没有提示符边界（非 bash）以及已接入显示端的会话都不会被关闭，未关闭的条目用 `skipped` 说明原因：`attached`、`command-running`、`prompt-unknown`。停在提示符前但尚未回车的输入、以及 `&` 起的后台任务都不算排除条件；它们由调用者自己负责（关掉后台任务通常是预期结果）。`--idle` 不接受参数值：阈值判断对单用户本地工具没有实际价值。输出仍是逐会话结果数组，`closing`、`stale`、`error` 与 `--all` 含义相同，失败时退出码 1，无会话返回 `[]`。`--idle` 与 `--all` 互斥，也不能和 ID 或参数值混用。
-
-## 命令
-
-命令自带完整帮助，Agent 无需先读 README：`tide --help` 查看能力和操作流程，`tide help send` 或 `tide send --help` 查看参数、输出、示例和失败处理。`--help` 必须紧跟命令单独使用；`tide send <id> '--help'` 仍会发送原文。插件通过 `tide plugin list` 发现，某个插件自己的命令用 `tide <插件 ID> --help` 查看；命令描述应说明参数、行为和返回值。
-
-| 命令 | 行为 |
-| --- | --- |
-| `launch [--shell executable] [--cwd directory] [--with-command text] [--attach] [--wait-idle] [--with-read] [-- shell-args...]` | 创建后台会话（默认无窗口），bash 提示符带 `T<短 ID>`；可自动发送命令、Enter、打开显示端，并等待和返回画面 |
-| `attach <id>` | 自动打开终端，接入原会话；关闭终端不结束会话 |
-| `list` | 列出本机当前托管的 shell 会话及最近执行的 `lastCommand`，不扫描 CLI 历史 |
-| `info <id>` | 按 ID 返回与 `list` 相同的会话信息 |
-| `send <id> <text>` | 写入文本；加 `--with-enter` 在文本后发送回车 |
-| `send <id> --stdin` | 从管道读取 UTF-8 原文，适合长文本与多行 |
-| `send <id> --key <key> [keys...]` | 顺序发送具名按键或组合键 |
-| `scroll <id> up\|down [--steps N]` | 向支持鼠标的 TUI 发送滚轮事件 |
-| `resize <id> --cols N --rows N` | 后台时直接调整 PTY，已接入时请求外层窗口调整尺寸 |
-| `read <id> [--lines N] [--full] [--plain-text]` | 获取解析后的终端画面 |
-| `wait-idle <id> [--idle-time seconds] [--timeout seconds] [--with-read]` | 等待画面连续不变，或到达超时，可同时返回画面 |
-| `close <id>` / `close --all` / `close --idle` | 结束指定会话、当前 `TIDE_STATE_DIR` 下的全部会话，或停在 bash 提示符前的会话，包括正在执行的任务；不是 CLI 回合打断 |
-| `plugin list` | 列出 Tide 知道的插件及启用状态，不访问会话 |
-| `plugin enable <路径>` / `plugin disable <路径>` | 改写 `.tide/plugins.json` 的插件列表，只对之后启动的会话生效 |
-| `plugin status <id>` | 查看该会话的插件匹配结果、命令和插件错误 |
-| `<plugin-id> <command> <id> [args...]` | 调用插件自己的命令，例如 `screen contains <id> 'ready'`；`all` 命令可用 `--all` 顶替 id，返回每个匹配会话一条结果 |
-
-默认输出 JSON。`read --plain-text` 只打印快照里的文本，保留空格、换行及省略提示，无 JSON 和颜色转义；输出区域比原窗口窄时，外层终端仍可能自动折行。
-
-`send` 统一发送文本和按键：默认原样文本、不回车；`--key` 明确选择按键模式。空格分隔顺序，`+` 表示组合键，不根据内容猜测模式。
-
-```bash
-tide send 5fefa Enter       # 输入单词 Enter
-tide send 5fefa --key Enter # 按回车
-tide send 5fefa q --wait-idle --with-read # 当前分页器用 q 退出时
-```
-
-按键示例：
-
-```bash
-tide send 5fefa --key Ctrl+U
-tide send 5fefa --key Ctrl+C
-tide send 5fefa --key Up Enter # 先 Up，再 Enter，中间不等待
-tide send 5fefa --key Ctrl+Left
-tide send 5fefa --key Ctrl+Shift+Left
-tide send 5fefa --key Shift+Tab
-tide send 5fefa --key Alt+b
-```
-
-支持 Enter/Escape/Tab/Backspace/Space、方向键/Home/End、Insert/Delete/PageUp/PageDown、F1–F12，以及可明确编码的 Ctrl/Alt/Shift 组合。Ctrl+字母映射控制字符，Alt+字母按字面大小写编码；导航键使用 xterm 修饰键序列。Shift+Enter、Ctrl+Enter、Win 等依赖额外协议或桌面行为的按键明确报错，不猜测或静默降级。每次支持 1..64 个键，先全部校验再投递；需要观察中间画面时分次调用。`--key` 不与文本、`--stdin` 或 `--with-enter` 混用；需要回车时将 Enter 写进键序列。普通字符（如 q）直接用文本模式发送。混用模式、非法按键或选项会在写入前整次拒绝，不执行前半段。
-
-`written: true` 只表示输入写进 PTY，不确认 CLI 已提交、执行或完成。请求断连/超时可能已经投递，不自动重发。用户手动输入和 Agent 输入可能交错，调用方应先观察画面再操作；核心不判断当前是否处于输入框或权限弹窗。
-
-`send` 的文本和按键模式均支持在文本/按键之后追加 `--wait-idle` 和 `--with-read`，可单独使用或组合：
-
-```bash
-tide send 5fefa '/help' --with-enter --wait-idle --with-read
-tide send 5fefa --key Enter --wait-idle --idle-time 3 --timeout 60 --with-read
-```
-
-执行顺序为发送、可选等待、可选抓屏；JSON 保留 `id`、`written`，按选项增加 `wait`（等待结果）和 `read`（终端读取结果）。`--idle-time`、`--timeout` 必须与 `--wait-idle` 一起使用，默认值和独立等待命令相同。等待超时仍执行请求的抓屏，退出码为 3。只加 `--with-read` 会立即抓屏，可能尚未看到程序响应；`send` 默认不提交，加 `--with-enter` 后先发送文本，短暂停顿后发送一次 Enter，再等待和抓屏。成功响应增加 `enterWritten: true`，仅表示回车已写入；回车失败保留 `written: true` 和 `error.stage: "enter"`，需先检查画面再决定是否重试。文本是 ID 后的第一个参数，只有 `--stdin` 和 `--key` 用于选择模式，其他内容（如 `--help`、`--wait-idle`）按原文发送。要输入字面量 `--stdin` 或 `--key`，使用管道传入 `--stdin`。`--stdin` 后同样可追加选项。
-
-发送确认后若等待或抓屏失败，仍返回 `written: true`，并附带 `error: {stage, message}`、stderr 错误和退出码 1，避免把观察失败误认为输入未送达。这些步骤不独占终端；其他人或 Agent 仍能同时输入。
-
-`wait-idle` 默认从调用时开始观察，画面连续 3 秒不变返回 `idle: true`（退出码 0），最多等待 30 秒；超时返回 `idle: false`（退出码 3）。两个参数单位为秒，支持小数，上限 3600 秒；`--idle-time` 必须大于 0，`--timeout 0` 表示立即超时。它比较解析后的屏幕文本、尺寸和缓冲区类型，忽略重复绘制相同内容、颜色码和标题变化，不读取历史空闲时间。
-
-独立等待也可组合抓屏：`tide wait-idle <id> --idle-time 3 --timeout 30 --with-read`。空闲或超时后均抓取画面，在原有 `id`、`idle`、`elapsedMs`、`idleForMs` 字段旁增加 `read` 读取结果；超时仍返回退出码 3。抓屏失败时保留等待结果，增加 `error: {stage: "read", message}`，退出码为 1。
-
-所有组合抓屏（`launch`、`send`、`scroll`、`resize`、`wait-idle`）与独立 `read` 使用相同规则。`--full` 和 `--lines N`（1..2000）互斥，且须与 `--with-read` 一起使用；只影响读取，不改变等待时观察的完整画面。组合操作保留 JSON 中的执行结果和错误，纯文本输出使用独立 `read --plain-text`。
-
-画面安静不等于任务完成或输入框已就绪；需要检查返回的 `read` 或另行抓屏，加载中的程序也可能暂时无输出。等待不重发输入、不停止目标，调用连接断开后停止这次观察。
-
-## 终端和环境
-
-后台宿主由 `node-pty` 托管 shell，`@xterm/headless` 维护屏幕；独立显示端负责终端输出、手动输入和尺寸变化。后者解析颜色、清屏、光标移动、覆盖和 alternate screen，不通过正则删颜色码来伪造快照。
-
-Windows 显示端启用 VT 输入并进入 raw 模式，让 TUI 的鼠标滚轮、方向键和括号粘贴序列能够透传（包括 Node 20）。启动时通过系统 PowerShell 设置当前控制台输入模式，不常驻额外进程；滚动行为仍由前台 CLI 和终端决定。
-
-默认 shell 按 `--shell`、`TIDE_SHELL`、`SHELL` 选择；Windows 未指定时查找 Git Bash，再使用系统 shell。Bash/zsh/sh/fish 默认交互式 login 参数，PowerShell 加载其常规 profile，也可通过 `--` 显式指定 shell 参数。继承导出的环境变量，启动文件仍由 shell 自己读取；父 shell 中未导出的变量、临时 alias/function 不会自动复制。
-
-子进程继承 `TIDE_SESSION_ID`、`TIDE_STATE_DIR` 和 `TIDE_ENTRY`，可调用 Tide 访问其他会话。后台宿主直接继承启动环境，一次性文件只传递 shell 参数，不保存整份环境。显示端不重新创建 shell，也不改变其环境。
-
-### 终端读取与输出预览
-
-公开入口为 `read` / `--with-read`，没有 `capture` CLI 别名。升级后需重开旧会话。
-
-Bash 4.4+ 通过 PS1 / PS0 的不可见 OSC 133 标记定位提示符与执行边界，不改命令、不清屏。读取只选择当前/最近一次开始执行的命令区域，包含命令前的提示符、输出和结束后的新提示符，不受窗口高度限制。新提示符出现后仍保留刚完成的结果，直到下一条命令开始；旧命令无论是否读取过，都不再参与选择。
-
-| 用法 | 返回内容 |
-| --- | --- |
-| `read <id>` | 当前/最近命令的前 10 行和后 30 行；不超过 40 行完整返回 |
-| `read <id> --full` | 同一命令的完整保留区域，不读取旧命令历史 |
-| `read <id> --lines 20` | 同一区域的末尾最多 20 行，不从旧命令补足 |
-
-`--full` 与 `--lines` 互斥；组合 `--with-read` 使用相同规则。没有命令标记的 shell、Bash 旧版本及 alternate-screen TUI 始终以当前画面为范围，默认和 `--full` 完整返回该画面，`--lines` 仅裁剪其尾部，不从屏幕上方补足。
-
-预览通常足以判断当前情况，不要求例行补齐中间输出。只有线索不足、定位具体问题或任务要求完整核对时，才扩大读取。省略处使用简短文本提示，不报告遗漏数量或引导补读；首尾输出和画面安静都不能单独证明任务完成。
-
-读取按显示行计算（包含提示符），不是原始日志行。`--lines N` 范围为 1..2000；`--full` 返回选定区域仍保留的全部内容，不另设 2000 行裁剪。不另外限制字符数。缓冲区已淘汰的内容无法恢复；需要完整原始日志时，应在执行原命令时重定向到文件。
-
-所有读取去掉最后内容或光标以下的无用空白行，保留内部空行与内容空格。省略提示不计入内容行数。`--plain-text` 包含省略提示；JSON 的 `cols` / `rows` 是终端尺寸，`cursor.row` 相对返回文本（含提示行）。光标所在行被裁剪时不返回 `cursor`，提示中注明 `cursor omitted`。
-
-读取不维护已读状态、不消费内容，重复读取观察当前保留区域；内部 idle 和插件 `capture()` 仍读取完整画面。清屏或尺寸变化重置命令边界，收到新的标记后恢复；启动文件覆盖相关 shell 集成可能令标记失效，此时按当前画面读取。这不是无损日志或可信执行审计。
-
-前台 CLI 退出后仍回到同一个 shell 和 Tide ID；关闭显示窗口不结束它。shell 退出或 `close` 后注销会话并通知显示端退出；Windows 上后台宿主可能再花约 6 秒完成 node-pty 清理，但不再拖住显示窗口。当前会话不支持跨宿主崩溃恢复。升级前已运行的旧宿主不支持 attach，需重开会话。
-
-接入时使用 xterm 序列化恢复保留画面，再连续转发输出，不通过 `read` 的纯文本预览恢复 TUI。颜色、光标、普通/备用屏幕、常用输入模式及分片控制序列有自动化覆盖；图像协议等 xterm 不支持的状态不保证恢复。详见 [后台会话与显示端](docs/background-sessions.md)。
-
-## 滚动与窗口尺寸
-
-滚动和尺寸调整示例：
-
-```bash
-tide scroll 5fefa up --steps 5 --wait-idle --with-read
-tide scroll 5fefa down --x 30 --y 10 --with-read
-tide resize 5fefa --cols 120 --rows 35 --wait-idle --with-read
-```
-
-`scroll` 的步数默认 3（1..100），不等于文本行数；位置是从 1 开始的屏幕列、行，默认屏幕中央。仅支持前台应用启用的 SGR 单元格鼠标协议，不支持时明确报错，不自动换成方向键。滚动改变用户和 Agent 共享的应用视图；它不是 shell 历史读取接口；长日志查阅应使用文件输出和 Read / grep / rg。
-
-`resize` 要求列数 20..500、行数 5..200。未接入显示端时直接调整 PTY 和屏幕副本；已接入时最多等 3 秒确认外层实际尺寸，PTY 和屏幕副本跟随外层，不强制制造内部尺寸差异。返回 `requested`、`actual`、`applied`，未达到目标时退出码为 3，仍可等待和抓屏。终端不支持、最大化、分屏或屏幕边界可能影响结果；请求超时不代表终端不会稍后处理。用户后续手动拉窗口会继续正常同步。已在 Windows Terminal 上验证，其他终端不保证支持。
-
-未经确认的观察：ConPTY 下曾见到 MSYS bash 在尺寸变化后丢掉紧随其后写入的第一个字节，但这是在 tide 之外看到的、无法按需复现，手工 resize 后继续输入也未重现，触发条件不明；遇到时重新输入即可。
-
-## Plugin
-
-通过 `.tide/plugins.json` 显式加载插件。每个插件声明 `id`（寻址命名空间，全局唯一）、`name`（展示名）和 `commands`（它自己的命令），另提供 `detect`、可选 `start` 和输出变化订阅。插件命令按 `tide <插件 ID> <命令> <会话 ID> [参数...]` 调用，不占用核心命令名；CLI 只解析命名空间并路由到该会话的宿主，插件代码在宿主里运行。声明 `all: true` 的命令可用 `--all` 顶替会话 ID，CLI 对每个匹配会话各跑一次并返回 `[{id, result}]`；汇总发生在 CLI，状态仍只存在于各会话的宿主里。插件 ID 不能与核心命令同名：CLI 先派发核心命令，同名插件永远调不到，所以读取配置时（启动会话、`tide plugin list`、`tide plugin enable`）直接报错，不会加载。插件复用同一套 `send`、`sendKey`，不使用独立投递路径。
-
-[插件契约和示例](docs/plugins.md)。保留本地模块插件机制，不再内置应用恢复插件。配置路径相对于 `plugins.json` 所在目录：
-
-```json
-{"plugins":["../examples/screen-plugin.mjs"]}
-```
-
-```bash
-tide plugin list
-tide plugin status 5fefa
-tide screen --help
-tide screen contains 5fefa 'ready'
-```
-
-原 `ccr` / `cxr` 的历史源码及配置迁移见[已移除的恢复插件](docs/resume-plugins.md)。
-
-## 验证与迁移
-
-`run` 已移除。使用 `launch` 创建后台会话，需要人工交互时用 `attach <id>` 或 `launch --attach` 打开显示端；不再提供接入当前终端的公开入口。
-
-启动 profile（`profiles`、`launch --profile`、`TIDE_LAUNCH_PROFILES`）已移除。环境变量由调用方设置并继承，命令组合交给脚本；使用 `--cwd` 和 `--with-command` 启动。旧 `launch-profiles.json` 不再读取，也不会自动删除；其中可能含密钥，请自行妥善处理。
-
-源码按职责组织：
-
-```text
-src/
-  cli/                      命令解析与帮助
-  session/                  会话宿主、启动、登记与 IPC
-  terminal/                 屏幕渲染、按键、shell 与 idle 检测
-  plugins/
-    runtime.ts              插件契约、加载与生命周期
-tests/
-  unit/                     单元测试
-  integration/              真实 PTY 与会话集成测试
-  fixtures/                 测试用终端和 CLI
-```
-
-后续问题记录在 [待验证问题](docs/open-questions.md)：快照 token 消耗和调用轮次，以及多个 read 的相互影响。
-
-```bash
+npm run link:local       # 构建并注册本地 tide 命令
 npm run typecheck
 npm test
 ```
 
-测试覆盖终端控制序列、组合键、短 ID 歧义、Git Bash 斜杠参数、真实 PTY/shell、纯文本输出、Plugin 检测与生命周期、本地通信和关闭注销。Windows 已实机验证；macOS 的窗口行为仍需实机验收。
+普通源码改动用 `npm run build` 重新构建；更改 npm 的命令入口后需要重新 link。`npm test` 包含真实 PTY 测试，并会重新构建 `dist`。
 
-`scripts/acceptance.mjs` 是手动验收脚本，覆盖自动化测试不便覆盖的路径：经 Tide 驱动 Claude 完成一个小任务并核对产物、Node REPL 表达式与 Ctrl+U、在一个会话内调用 Tide 操作另一个会话、持续刷屏后的超时与 idle、长等待、CLI 退出后回到同一 shell。
-
-旧的 `watch/unwatch/resume/quota/status/snapshot/tail/wait`、CLI 历史扫描和自动恢复实现已移除。`tide send` 现在表示终端文本输入，旧的 `--cli/--message/--mode` 用法不再适用。旧配置/历史状态不会导入新会话，新核心不读取它们；升级前已运行的旧版本进程需结束，新版本不会接管它们。
-
-本地运行数据位于 `TIDE_STATE_DIR`（默认安装目录旁 `.tide`）：`sessions/` 保存当前宿主的私有登记，`terminal-launches/` 保存一次性启动交接，`session-logs/` 保存后台宿主诊断；除 `tide plugin enable/disable` 改写 `.tide/plugins.json` 外，不写 CLI 的历史或配置。异常终止留下的失效登记会在确认端点不存在后清理，无法确认的端点会报错，避免错误消除短 ID 歧义。
+- [使用参考](docs/cli-reference.md)：命令、返回值、安装排障和迁移。
+- [后台会话与显示端](docs/background-sessions.md)：会话如何存活、显示如何重新接入。
+- [插件契约与示例](docs/plugins.md)：增加应用专用能力；仅加载你信任的本地代码。
+- [终端读取的边界](docs/open-questions.md)：当前保证和待验证项。
 
 ## 许可证
 
-MIT，见 [LICENSE](LICENSE)。
+[MIT](LICENSE)

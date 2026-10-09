@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { ShellOptions } from "../session/types.js";
 
-const shellName = (shell: string) => basename(shell).replace(/\.exe$/i, "").toLowerCase();
+const shellName = (shell: string) => shell.replaceAll("\\", "/").split("/").at(-1)!.replace(/\.exe$/i, "").toLowerCase();
 
 // The in-shell marker that identifies a Tide session. bash runs PROMPT_COMMAND
 // before every prompt, so the marker survives startup files that replace PS1:
@@ -39,20 +39,39 @@ export function promptEnv(shell: string, id: string, inherited = process.env.PRO
   return { PROMPT_COMMAND: cleaned ? `${add}; ${cleaned}` : add };
 }
 
+export const MIN_BASH_VERSION = "4.4";
+
+export function requireBashVersion(shell: string, version: string) {
+  const match = /^(\d+)\.(\d+)(?:\.|$)/.exec(version);
+  const [major, minor] = MIN_BASH_VERSION.split(".").map(Number) as [number, number];
+  if (match && (+match[1]! > major || (+match[1]! === major && +match[2]! >= minor))) return;
+  throw Error(`Tide requires Bash >= ${MIN_BASH_VERSION}. Found: ${shell} (${version || "not Bash / version unavailable"}). On macOS: brew install bash, then tide launch --shell /opt/homebrew/bin/bash (Intel: /usr/local/bin/bash). On Windows: install/update Git Bash. Use --shell or TIDE_SHELL to select Bash.`);
+}
+
+export function checkBash(shell: string, cwd = process.cwd()) {
+  const probe = spawnSync(shell, ["--noprofile", "--norc", "-c", 'printf "%s" "$BASH_VERSION"'], {
+    encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 4096, cwd,
+    env: { ...process.env, BASH_ENV: "", ENV: "" },
+  });
+  if (probe.error || probe.status !== 0) {
+    throw Error(`Cannot verify Bash >= ${MIN_BASH_VERSION} at ${shell}: ${probe.error?.message ?? probe.stderr.trim()}. Select a supported Bash with --shell or TIDE_SHELL.`);
+  }
+  requireBashVersion(shell, probe.stdout.trim());
+}
+
 export function shellCommand(options: ShellOptions) {
-  let shell = options.shell || process.env.TIDE_SHELL || process.env.SHELL;
+  let shell = options.shell || process.env.TIDE_SHELL;
   if (!shell && process.platform === "win32") shell = process.env.CLAUDE_CODE_GIT_BASH_PATH
-    || spawnSync("where.exe", ["bash.exe"], { encoding: "utf8", windowsHide: true }).stdout?.split(/\r?\n/).find((p) => p && !/WindowsApps/i.test(p))
-    || process.env.ComSpec || "powershell.exe";
-  shell ||= "/bin/sh";
+    || spawnSync("where.exe", ["bash.exe"], { encoding: "utf8", windowsHide: true, timeout: 5000 }).stdout?.split(/\r?\n/).find((p) => p && !/WindowsApps/i.test(p));
+  shell ||= "bash";
   if (process.platform === "win32") {
     const drivePath = /^\/([a-z])\/(.*)$/i.exec(shell);
     if (drivePath) shell = `${drivePath[1]}:/${drivePath[2]}`;
     if (shell === "/bin/bash" || shell === "/usr/bin/bash") shell = "bash.exe";
   }
-  const name = shellName(shell);
-  const args = options.args ?? (["bash", "zsh", "sh", "fish"].includes(name) ? ["-il"] : ["pwsh", "powershell"].includes(name) ? ["-NoLogo"] : name === "cmd" ? ["/Q"] : []);
-  return { shell, args, cwd: resolve(options.cwd || process.cwd()) };
+  const cwd = resolve(options.cwd || process.cwd());
+  checkBash(shell, cwd);
+  return { shell, args: options.args ?? ["-il"], cwd };
 }
 
 // Bash expands PS0 immediately before execution (4.4+). PS1 marks the beginning

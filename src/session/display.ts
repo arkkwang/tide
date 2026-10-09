@@ -1,8 +1,9 @@
 import { createServer, type Socket } from "node:net";
 import { randomBytes } from "node:crypto";
-import { chmodSync, unlinkSync } from "node:fs";
+import { displayEndpoint, listenEndpoint } from "./endpoints.js";
 import { validateSize } from "../terminal/resize.js";
 import { errorMessage, type SessionRecord } from "./types.js";
+export { displayEndpoint } from "./endpoints.js";
 
 export type DisplayState = "detached" | "opening" | "attached";
 export type DisplayEvent =
@@ -11,7 +12,6 @@ export type DisplayEvent =
   | { event: "resize"; cols: number; rows: number }
   | { event: "exit"; code: number }
   | { event: "error"; message: string };
-export const displayEndpoint = (record: SessionRecord) => `${record.endpoint}-display`;
 const MAX_BYTES = 4 * 1024 * 1024;
 
 // The host owns the only display slot. Reservation and connection transitions are
@@ -125,11 +125,7 @@ export class Display {
         }
       });
     });
-    await new Promise<void>((resolve, reject) => {
-      this.server!.once("error", reject);
-      this.server!.listen(displayEndpoint(this.record), resolve);
-    });
-    if (process.platform !== "win32") chmodSync(displayEndpoint(this.record), 0o600);
+    await listenEndpoint(this.server, displayEndpoint(this.record));
   }
 
   dispose(code = 0) {
@@ -142,8 +138,5 @@ export class Display {
     }
     this.server?.close();
     this.release();
-    if (process.platform !== "win32") {
-      try { unlinkSync(displayEndpoint(this.record)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    }
   }
 }

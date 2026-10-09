@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { commandHelp } from "../../src/cli/help.ts";
 
-const cli = (...args: string[]) => spawnSync(process.execPath, [resolve("dist/tide.mjs"), ...args], {
+const cli = (...args: string[]) => spawnSync(process.execPath, [resolve(process.env.TIDE_TEST_ENTRY ?? "dist/tide.mjs"), ...args], {
   encoding: "utf8", windowsHide: true, timeout: 5000,
   env: { ...process.env, TIDE_STATE_DIR: resolve("package.json") }, // Cannot be used as a session directory.
 });
@@ -12,6 +12,8 @@ const cli = (...args: string[]) => spawnSync(process.execPath, [resolve("dist/ti
 test("all public commands expose help without accessing sessions or launching shells", () => {
   const overview = cli().stdout;
   assert.match(overview, /COMMANDS/);
+  assert.match(overview, /Requires Bash >= 4\.4/);
+  assert.match(overview, /State defaults to ~\/\.tide; override with TIDE_STATE_DIR/);
   assert.match(overview, /Text does not auto-submit; use --with-enter/);
   assert.match(overview, /written acknowledges input delivery/);
   assert.doesNotMatch(overview, /AGENT WORKFLOW|SAFETY AND RESULTS|ENVIRONMENT/);

@@ -1,5 +1,5 @@
 import { createConnection, createServer, type Socket } from "node:net";
-import { chmodSync } from "node:fs";
+import { listenEndpoint } from "./endpoints.js";
 import { Registry, resolveSession } from "./registry.js";
 import { errorMessage, type Request, type SessionInfo, type SessionRecord } from "./types.js";
 import { validateWait } from "../terminal/idle.js";
@@ -61,8 +61,7 @@ export async function listen(record: SessionRecord, handle: (request: Request, s
       } catch (error) { socket.end(JSON.stringify({ ok: false, error: errorMessage(error) }) + "\n"); }
     });
   });
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(record.endpoint, resolve); });
-  if (process.platform !== "win32") chmodSync(record.endpoint, 0o600);
+  await listenEndpoint(server, record.endpoint);
   return () => { for (const socket of sockets) socket.destroy(); server.close(); };
 }
 

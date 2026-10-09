@@ -1,3 +1,5 @@
+import { MIN_BASH_VERSION } from "../terminal/shell.js";
+
 const readOptions = `  --lines N      Last N lines of the selected range (1..2000).
   --full         Complete retained selected range; --full and --lines are mutually exclusive.`;
 const timingOptions = `  --idle-time N  Quiet seconds, default 3 (>0..3600).
@@ -9,7 +11,7 @@ ${timingOptions}
 ${readOptions}
   --lines/--full require --with-read. Observation errors retain the operation result;
   failed requests may have delivered input.`;
-const shellOptions = `  --shell executable  Override TIDE_SHELL / SHELL / platform default.
+const shellOptions = `  --shell executable  Bash >= ${MIN_BASH_VERSION}; override TIDE_SHELL / Bash on PATH.
   --cwd directory     Working directory; default is the caller's directory.`;
 
 // One definition supplies both the overview and each command's local expansion.
@@ -19,7 +21,7 @@ const commands: Record<string, { usage: string[]; summary: string; details?: str
     summary: 'Start a background shell session (no window unless --attach); return its Tide ID.',
     details: `${shellOptions}
   --with-command text  Send a single-line command followed by Enter.
-  -- args...           Shell arguments.
+  -- args...           Bash arguments (default: -il).
   --attach             Open a terminal display for this new session. Windows/macOS
                        only, and not the current terminal (no focus guarantee): Windows Terminal
                        tab / macOS Terminal window. Attach happens after command submission,
@@ -133,6 +135,7 @@ ${Object.values(commands).map(command => command.usage.map(usage => `  ${usage}`
   launch --attach opens a terminal display for the new session (Windows/macOS).
   wait-idle --with-read also accepts --full | --lines N.
 
+Requires Bash >= ${MIN_BASH_VERSION}. State defaults to ~/.tide; override with TIDE_STATE_DIR.
 Text does not auto-submit; use --with-enter.
 written acknowledges input delivery; idle means an unchanged screen, not completion.
 promptState is a visible shell prompt/execution boundary, not process or task status.

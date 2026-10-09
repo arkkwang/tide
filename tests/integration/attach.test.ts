@@ -1,8 +1,10 @@
+import { tmpdir } from "node:os";
+import { shellCommand } from "../../src/terminal/shell.ts";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { createConnection } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import pty from 'node-pty';
@@ -12,7 +14,7 @@ import { displayEndpoint, type DisplayEvent } from '../../src/session/display.ts
 import { Screen } from '../../src/terminal/screen.ts';
 import type { SessionInfo, SessionRecord, Snapshot } from '../../src/session/types.ts';
 
-const entry = resolve('dist/tide.mjs');
+const entry = resolve(process.env.TIDE_TEST_ENTRY ?? 'dist/tide.mjs');
 const until = async <T>(get: () => Promise<T>, check: (value: T) => boolean) => {
   for (let i = 0; i < 100; i++) { const value = await get(); if (check(value)) return value; await sleep(50); }
   throw Error('Expected session state was not observed');
@@ -20,15 +22,14 @@ const until = async <T>(get: () => Promise<T>, check: (value: T) => boolean) => 
 
 // Uses ConPTY / a Unix PTY as the viewer's outer terminal; never launches WT/open.
 test('background host and viewer share one PTY; disconnect and reattach preserve the application', { timeout: 40000 }, async () => {
-  mkdirSync(resolve('.tide/tests'), { recursive: true });
-  const state = mkdtempSync(resolve('.tide/tests/attach-'));
+  const state = mkdtempSync(join(tmpdir(), "t-"));
   const registry = new Registry(state);
   const viewers: pty.IPty[] = [], sockets: ReturnType<typeof createConnection>[] = [], screens: Screen[] = [];
   let record: SessionRecord | undefined;
   const info = () => rpc<SessionInfo>(record!, { command: 'info' });
   const read = () => rpc<Snapshot>(record!, { command: 'read', full: true });
   try {
-    const launched = spawnSync(process.execPath, [entry, 'launch', '--shell', process.execPath, '--', resolve('tests/fixtures/attach-app.mjs')], {
+    const launched = spawnSync(process.execPath, [entry, 'launch', '--shell', process.env.TIDE_TEST_SHELL ?? shellCommand({}).shell, '--', '--noprofile', '--norc', '-c', 'exec "$@"', 'tide-fixture', process.execPath.replaceAll('\\', '/'), resolve('tests/fixtures/attach-app.mjs').replaceAll('\\', '/')], {
       env: { ...process.env, TIDE_STATE_DIR: state }, encoding: 'utf8', windowsHide: true, timeout: 15000,
     });
     assert.equal(launched.status, 0, launched.stderr);

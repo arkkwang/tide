@@ -22,7 +22,7 @@ function record(registry: Registry): SessionRecord {
 }
 
 async function cli(state: string, ...args: string[]) {
-  const child = spawn(process.execPath, [resolve('dist/tide.mjs'), 'close', ...args], {
+  const child = spawn(process.execPath, [resolve(process.env.TIDE_TEST_ENTRY ?? 'dist/tide.mjs'), 'close', ...args], {
     env: { ...process.env, TIDE_STATE_DIR: state }, windowsHide: true,
   });
   let stdout = '', stderr = '';
@@ -35,8 +35,8 @@ async function cli(state: string, ...args: string[]) {
 }
 
 test('close --all reports partial failure, clears stale records, and respects registry scope', { timeout: 15000 }, async () => {
-  const state = mkdtempSync(join(tmpdir(), 'tide-close-'));
-  const other = mkdtempSync(join(tmpdir(), 'tide-other-'));
+  const state = mkdtempSync(join(tmpdir(), 'tc-'));
+  const other = mkdtempSync(join(tmpdir(), 'to-'));
   const registry = new Registry(state), outside = new Registry(other);
   const stops: Array<() => void> = [];
   const calls: string[] = [];

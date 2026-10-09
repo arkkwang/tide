@@ -21,5 +21,5 @@ child.onData((data) => {
     }
   }
 });
-child.onExit(({ exitCode }) => { screen.dispose(); process.exit(exitCode ?? 0); });
+child.onExit(({ exitCode }) => { if (!reported) console.error(startup); screen.dispose(); process.exit(exitCode ?? 0); });
 process.on('SIGTERM', () => { child.kill(); process.exit(0); });

@@ -1,17 +1,11 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import type { SessionRecord } from "./types.js";
 
 export function stateDirectory(): string {
   if (process.env.TIDE_STATE_DIR) return resolve(process.env.TIDE_STATE_DIR);
-  let directory = dirname(fileURLToPath(import.meta.url));
-  while (!existsSync(join(directory, "package.json"))) {
-    const parent = dirname(directory);
-    if (directory === parent) throw Error("Cannot locate Tide package root; set TIDE_STATE_DIR");
-    directory = parent;
-  }
-  return join(directory, ".tide");
+  return join(homedir(), ".tide");
 }
 
 export function validateId(id: string): string {

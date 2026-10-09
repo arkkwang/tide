@@ -1,26 +1,31 @@
+import { tmpdir } from "node:os";
+import { shellCommand } from "../../src/terminal/shell.ts";
+import { prepareMacPty } from "../../src/terminal/macos-pty.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Registry } from "../../src/session/registry.ts";
 import { liveSessions, requestSession, rpc } from "../../src/session/ipc.ts";
 import type { SessionInfo, Snapshot, Request } from "../../src/session/types.ts";
 
-const entry = resolve("dist/tide.mjs");
-const shell = process.platform === "win32" ? spawnSync("where.exe", ["bash.exe"], { encoding: "utf8", windowsHide: true }).stdout.split(/\r?\n/).find((p) => p && !/WindowsApps/i.test(p)) : "/bin/bash";
+const entry = resolve(process.env.TIDE_TEST_ENTRY ?? "dist/tide.mjs");
+const shell = process.env.TIDE_TEST_SHELL ?? shellCommand({}).shell;
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 // These tests skip Bash startup files, so inherited prompts may reference unloaded functions.
 const testEnv = { ...process.env, PS1: "$ ", PROMPT_COMMAND: "" };
 
 test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycle and cleanup", { skip: !shell, timeout: 60000 }, async (t) => {
-  mkdirSync(resolve(".tide/tests"), { recursive: true });
-  const state = mkdtempSync(resolve(".tide/tests/session-"));
+
+  const state = mkdtempSync(join(tmpdir(), "t-"));
   writeFileSync(join(state, "plugins.json"), JSON.stringify({ plugins: [resolve("examples/screen-plugin.mjs")] }));
   const registry = new Registry(state);
   const children: Array<{ child: ChildProcess; exit: Promise<number>; exited: boolean }> = [];
   async function host() {
+    // This fixture creates an outer PTY before Tide gets to start its own host.
+    prepareMacPty();
     const child = spawn(process.execPath, [resolve('tests/fixtures/terminal-driver.mjs'), '--import', 'tsx', resolve('tests/fixtures/launch-view.ts'), entry, "--shell", shell!, "--", "--noprofile", "--norc", "-i"], { windowsHide: true, cwd: process.cwd(), env: { ...testEnv, TIDE_STATE_DIR: state, TERM: "xterm-256color" } });
     let hostPid = 0;
     child.stdout.on('data', (data) => { hostPid = Number(String(data).trim()); });
@@ -357,8 +362,8 @@ test("real shell sessions: short IDs, public CLI, plain capture, plugin lifecycl
 });
 
 test("launch submits a command and returns its rendered output in one call", { skip: !shell || !["win32", "darwin"].includes(process.platform), timeout: 60000 }, async () => {
-  mkdirSync(resolve(".tide/tests"), { recursive: true });
-  const state = mkdtempSync(resolve(".tide/tests/launch-"));
+
+  const state = mkdtempSync(join(tmpdir(), "t-"));
   const registry = new Registry(state);
   const cli = (...args: string[]) => spawnSync(process.execPath, [entry, ...args], {
     encoding: "utf8", windowsHide: true, timeout: 45000, env: { ...testEnv, TIDE_STATE_DIR: state },

@@ -2,20 +2,20 @@
 
 插件用于在通用终端能力之上增加识别、结构化查询或应用专用操作。核心不内置 Claude/Codex 状态机，也不读取 CLI 历史文件。
 
-在 `TIDE_STATE_DIR/plugins.json`（默认项目安装目录旁的 `.tide/plugins.json`）中显式列出本地 ES module：
+在 `TIDE_STATE_DIR/plugins.json`（默认用户主目录下的 `~/.tide/plugins.json`）中显式列出本地 ES module：
 
 ```json
-{"plugins": ["../examples/screen-plugin.mjs"]}
+{"plugins": ["/absolute/path/to/screen-plugin.mjs"]}
 ```
 
-相对路径以这个配置文件所在目录为基准。每个会话启动时加载一次，修改后重开会话。也可以用 `tide plugin enable <路径>` / `tide plugin disable <路径>` 改写这个文件：参数就是文件里存的那个字符串（模块路径），两者同样只对之后启动的会话生效，并打印改动后的启用状态。`enable` 会先加载并校验模块，加载不了或 ID 冲突的插件不会被写进文件。没有自动扫描工作目录、下载或热更新。插件以用户权限运行，应仅配置可信代码。
+将示例路径替换为插件文件的实际绝对路径；也可用相对路径，以这个配置文件所在目录为基准。每个会话启动时加载一次，修改后重开会话。也可以用 `tide plugin enable <路径>` / `tide plugin disable <路径>` 改写这个文件：参数就是文件里存的那个字符串（模块路径），两者同样只对之后启动的会话生效，并打印改动后的启用状态。`enable` 会先加载并校验模块，加载不了或 ID 冲突的插件不会被写进文件。没有自动扫描工作目录、下载或热更新。插件以用户权限运行，应仅配置可信代码。
 
 Tide 不再内置应用恢复插件；原 `ccr` / `cxr` 的历史源码和迁移说明见[已移除的恢复插件](resume-plugins.md)。
 
 ```bash
 tide plugin list          # 当前配置的本地插件
-tide plugin enable ../examples/screen-plugin.mjs    # 写 plugins.json；只对新会话生效
-tide plugin disable ../examples/screen-plugin.mjs
+tide plugin enable /absolute/path/to/screen-plugin.mjs    # 写 plugins.json；只对新会话生效
+tide plugin disable /absolute/path/to/screen-plugin.mjs
 tide plugin status <id>   # 某个会话里哪些插件生效
 tide screen contains <id> 'Claude Code'
 tide screen contains --all 'Claude Code'   # 每个匹配会话各问一次

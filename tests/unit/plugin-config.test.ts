@@ -21,7 +21,7 @@ function moduleFile(state: string, name: string, source: string): string {
 }
 
 function cli(state: string, ...args: string[]) {
-  return spawnSync(process.execPath, [resolve("dist/tide.mjs"), ...args], {
+  return spawnSync(process.execPath, [resolve(process.env.TIDE_TEST_ENTRY ?? "dist/tide.mjs"), ...args], {
     encoding: "utf8", windowsHide: true, timeout: 15000,
     env: { ...process.env, TIDE_STATE_DIR: state },
   });

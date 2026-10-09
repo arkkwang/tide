@@ -1,8 +1,9 @@
+import { shellCommand } from "../../src/terminal/shell.ts";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -10,8 +11,8 @@ import { Registry } from '../../src/session/registry.ts';
 import { listen, rpc } from '../../src/session/ipc.ts';
 import type { PromptState, Request, SessionInfo, SessionRecord } from '../../src/session/types.ts';
 
-const entry = resolve('dist/tide.mjs');
-const shell = process.platform === 'win32' ? spawnSync('where.exe', ['bash.exe'], { encoding: 'utf8', windowsHide: true }).stdout.split(/\r?\n/).find((p) => p && !/WindowsApps/i.test(p)) : '/bin/bash';
+const entry = resolve(process.env.TIDE_TEST_ENTRY ?? 'dist/tide.mjs');
+const shell = process.env.TIDE_TEST_SHELL ?? shellCommand({}).shell;
 
 type Outcome = { id: string; closing?: boolean; stale?: boolean; skipped?: string; idleForMs?: number; error?: { message: string } };
 
@@ -41,7 +42,7 @@ async function cli(state: string, ...args: string[]) {
 }
 
 test('close --idle closes every session waiting at a prompt and reports why others were kept', { timeout: 15000 }, async () => {
-  const state = mkdtempSync(join(tmpdir(), 'tide-close-idle-'));
+  const state = mkdtempSync(join(tmpdir(), 'ti-'));
   const empty = mkdtempSync(join(tmpdir(), 'tide-close-idle-empty-'));
   const registry = new Registry(state);
   const stops: Array<() => void> = [];
@@ -108,8 +109,8 @@ test('close --idle closes every session waiting at a prompt and reports why othe
   }
 });
 
-test('close --idle keeps a real session running a command and closes it once the prompt is back', { skip: !shell, timeout: 60000 }, async () => {  mkdirSync(resolve('.tide/tests'), { recursive: true });
-  const state = mkdtempSync(resolve('.tide/tests/close-idle-'));
+test('close --idle keeps a real session running a command and closes it once the prompt is back', { skip: !shell, timeout: 60000 }, async () => {
+  const state = mkdtempSync(join(tmpdir(), "t-"));
   const registry = new Registry(state);
   const env = { ...process.env, PS1: '$ ', PROMPT_COMMAND: '', TIDE_STATE_DIR: state, TERM: 'xterm-256color' };
   const run = (...args: string[]) => spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', windowsHide: true, timeout: 45000, env });
